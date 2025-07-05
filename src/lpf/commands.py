@@ -19,6 +19,65 @@ from .utils import (
 from .config import PID_DIR
 
 
+def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
+    """Starts the autossh process for a given tunnel and returns the PID."""
+    safe_filename = sanitize_filename(tunnel_id)
+    pid_file = PID_DIR / f"{safe_filename}.pid"
+
+    console.print(
+        f"Starting tunnel: localhost:{details['local_port']} -> {details['ssh_host']}:{details['remote_port']}"
+    )
+
+    command = [
+        "autossh",
+        "-f",
+        "-M",
+        "0",
+        "-N",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-L",
+        f"{details['local_port']}:localhost:{details['remote_port']}",
+        details["ssh_host"],
+    ]
+
+    env = os.environ.copy()
+    env["AUTOSSH_PIDFILE"] = str(pid_file)
+    env["AUTOSSH_GATETIME"] = "0"
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        console.print("[bold red]Error:[/] Failed to start autossh.")
+        console.print(f"Stderr: {result.stderr.strip()}")
+        return None
+
+    timeout = 5
+    start_time = time.time()
+    pid = None
+    while time.time() - start_time < timeout:
+        if pid_file.exists():
+            with open(pid_file, "r") as f:
+                content = f.read().strip()
+                if content:
+                    try:
+                        pid = int(content)
+                        break
+                    except ValueError:
+                        pass
+        time.sleep(0.1)
+
+    if pid is None:
+        console.print(
+            "[bold red]Error:[/] PID file was not created in time. Tunnel may have failed to start."
+        )
+        return None
+
+    return pid
+
+
 def add_tunnel(
     ssh_host: str, local_port: int, remote_port: int | None, force: bool = False
 ):
@@ -58,88 +117,36 @@ def add_tunnel(
 
     tunnel_id = f"{ssh_host}:{local_port}"
 
-    if tunnel_id in tunnels and is_process_running(
-        tunnels[tunnel_id].get("pid"), tunnels[tunnel_id]
-    ):
+    if tunnel_id in tunnels:
         console.print(
-            f"[bold red]Error:[/] A tunnel for {tunnel_id} appears to be already active."
+            f"[bold red]Error:[/] A tunnel for {tunnel_id} already exists."
         )
         sys.exit(1)
 
-    # Sanitize the tunnel_id to create a safe filename
-    safe_filename = sanitize_filename(tunnel_id)
-    pid_file = PID_DIR / f"{safe_filename}.pid"
-
-    console.print(
-        f"Starting tunnel: localhost:{local_port} -> {ssh_host}:{remote_port}"
-    )
-
-    # Construct the autossh command
-    command = [
-        "autossh",
-        "-f",
-        "-M",
-        "0",
-        "-N",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-L",
-        f"{local_port}:localhost:{remote_port}",
-        ssh_host,
-    ]
-
-    # Set environment variables for autossh
-    env = os.environ.copy()
-    env["AUTOSSH_PIDFILE"] = str(pid_file)
-    env["AUTOSSH_GATETIME"] = "0"
-
-    # Execute the command
-    result = subprocess.run(command, env=env, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        console.print("[bold red]Error:[/] Failed to start autossh.")
-        console.print(f"Stderr: {result.stderr.strip()}")
-        sys.exit(1)
-
-    # Poll for the PID file to be created, with a timeout
-    timeout = 5  # seconds
-    start_time = time.time()
-    pid = None
-    while time.time() - start_time < timeout:
-        if pid_file.exists():
-            with open(pid_file, "r") as f:
-                content = f.read().strip()
-                if content:
-                    try:
-                        pid = int(content)
-                        break
-                    except ValueError:
-                        # PID file might be being written, wait a bit
-                        pass
-        time.sleep(0.1)
-
-    if pid is None:
-        console.print(
-            "[bold red]Error:[/] PID file was not created in time. Tunnel may have failed to start."
-        )
-        console.print("Check `autossh` logs or try running the command manually.")
-        sys.exit(1)
-
-    # Update the state file
+    # Create the tunnel configuration
     tunnels[tunnel_id] = {
         "local_port": local_port,
         "remote_port": remote_port,
         "ssh_host": ssh_host,
-        "pid": pid,
-        "pid_file": str(pid_file),
     }
-    save_tunnels(tunnels)
 
-    console.print(
-        f"✅ [green]Tunnel '{tunnel_id}' started successfully with PID {pid}.[/green]"
-    )
+    # Start the tunnel process
+    pid = _start_tunnel_process(tunnel_id, tunnels[tunnel_id])
+
+    if pid:
+        tunnels[tunnel_id]["pid"] = pid
+        tunnels[tunnel_id]["pid_file"] = str(
+            PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
+        )
+        save_tunnels(tunnels)
+        console.print(
+            f"✅ [green]Tunnel '{tunnel_id}' started successfully with PID {pid}.[/green]"
+        )
+    else:
+        # Clean up the failed tunnel entry
+        del tunnels[tunnel_id]
+        save_tunnels(tunnels)
+        sys.exit(1)
 
 
 def list_tunnels():
@@ -223,6 +230,38 @@ def remove_all_tunnels():
         remove_tunnel(tunnel_id)
 
     console.print("✅ [green]All tunnels removed successfully.[/green]")
+
+
+def restart_all_inactive():
+    """Finds all inactive tunnels and restarts them."""
+    sync_tunnels(silent=True)
+    tunnels = load_tunnels()
+    restarted_count = 0
+
+    console.print("Checking for inactive tunnels to restart...")
+
+    for tunnel_id, details in tunnels.items():
+        if not is_process_running(details.get("pid"), details):
+            console.print(f"Restarting inactive tunnel: [cyan]{tunnel_id}[/cyan]")
+            pid = _start_tunnel_process(tunnel_id, details)
+            if pid:
+                tunnels[tunnel_id]["pid"] = pid
+                tunnels[tunnel_id]["pid_file"] = str(
+                    PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
+                )
+                restarted_count += 1
+            else:
+                console.print(
+                    f"[bold red]Failed to restart tunnel '{tunnel_id}'.[/bold red]"
+                )
+
+    if restarted_count > 0:
+        save_tunnels(tunnels)
+        console.print(
+            f"✅ [green]Finished. Restarted {restarted_count} tunnel(s).[/green]"
+        )
+    else:
+        console.print("✅ [green]No inactive tunnels found.[/green]")
 
 
 def sync_tunnels(silent: bool = False):
