@@ -8,14 +8,9 @@ import re
 import socket
 import sys
 from .config import CONFIG_DIR, PID_DIR, STATE_FILE
+from rich.console import Console
 
-# --- Optional Rich Import ---
-try:
-    from rich.console import Console
-
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
+console = Console()
 
 
 def ensure_config_dirs():
@@ -42,17 +37,6 @@ def save_tunnels(tunnels):
         json.dump(tunnels, f, indent=2)
 
 
-def _print(message):
-    """Helper to print with rich if available, otherwise use standard print."""
-    if RICH_AVAILABLE:
-        console = Console() # type: ignore
-        console.print(message)
-    else:
-        # Strip rich markup for plain print
-        plain_message = re.sub(r"\[(.*?)\]", "", message)
-        print(plain_message)
-
-
 def sanitize_filename(name):
     """Replace special characters in a string to make it a valid filename."""
     return re.sub(r"[^a-zA-Z0-9._-]", "_", name)
@@ -69,7 +53,7 @@ def is_port_in_use(port):
             if e.errno == 98:  # Address already in use
                 return True
             else:
-                _print(
+                console.print(
                     f"[bold red]Error:[/] Unexpected error checking port {port}: {e}"
                 )
                 return True
