@@ -142,3 +142,54 @@ def list_tunnels():
         table.add_row(tunnel_id, status, forwarding_str)
 
     console.print(table)
+
+
+def remove_tunnel(tunnel_id: str):
+    """Handler for the 'rm' command."""
+    tunnels = load_tunnels()
+
+    if tunnel_id not in tunnels:
+        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
+        sys.exit(1)
+
+    details = tunnels[tunnel_id]
+    pid = details.get("pid")
+
+    if pid and is_process_running(pid, details):
+        console.print(f"Stopping tunnel '{tunnel_id}' (PID: {pid})...")
+        try:
+            os.kill(pid, 15)  # Send SIGTERM
+        except OSError as e:
+            console.print(f"[bold red]Error:[/] Failed to stop process {pid}: {e}")
+
+    # Clean up PID file
+    pid_file_path = details.get("pid_file")
+    if pid_file_path:
+        try:
+            os.remove(pid_file_path)
+        except FileNotFoundError:
+            pass  # It's already gone, which is fine
+        except OSError as e:
+            console.print(
+                f"[bold red]Warning:[/] Could not remove PID file {pid_file_path}: {e}"
+            )
+
+    # Remove from state and save
+    del tunnels[tunnel_id]
+    save_tunnels(tunnels)
+
+    console.print(f"✅ [green]Tunnel '{tunnel_id}' removed successfully.[/green]")
+
+
+def remove_all_tunnels():
+    """Handler for the 'rm --all' command."""
+    tunnels = load_tunnels()
+    if not tunnels:
+        console.print("No tunnels to remove.")
+        return
+
+    console.print(f"Removing all {len(tunnels)} tunnels...")
+    for tunnel_id in list(tunnels.keys()):
+        remove_tunnel(tunnel_id)
+
+    console.print("✅ [green]All tunnels removed successfully.[/green]")

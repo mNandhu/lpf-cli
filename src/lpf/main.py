@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import typer
 from . import commands
-from .utils import ensure_config_dirs
+from .utils import ensure_config_dirs, console
 
 app = typer.Typer(
     name="lpf",
@@ -29,6 +29,27 @@ def add_tunnel_command(
 def list_tunnels_command():
     """List all configured tunnels and their status."""
     commands.list_tunnels()
+
+
+@app.command("rm", help="Stop and remove a tunnel")
+def remove_tunnel_command(
+    tunnel_id: str = typer.Argument(
+        None, help="The ID of the tunnel to remove (e.g., user@hostname:port)"
+    ),
+    all: bool = typer.Option(
+        False, "--all", "-a", help="Remove all configured tunnels."
+    ),
+):
+    """Stop and remove a tunnel."""
+    if all:
+        commands.remove_all_tunnels()
+    elif tunnel_id:
+        commands.remove_tunnel(tunnel_id)
+    else:
+        console.print(
+            "[bold red]Error:[/] Please provide a tunnel ID or use the --all flag."
+        )
+        raise typer.Exit(code=1)
 
 
 def main():
