@@ -117,6 +117,9 @@ def add_tunnel(ssh_host: str, local_port: int, remote_port: int | None):
 
 def list_tunnels():
     """Handler for the 'ls' command."""
+    # Sync first to clean up any stale tunnels
+    sync_tunnels(silent=True)
+
     tunnels = load_tunnels()
     if not tunnels:
         console.print("No tunnels are configured.")
@@ -193,3 +196,38 @@ def remove_all_tunnels():
         remove_tunnel(tunnel_id)
 
     console.print("✅ [green]All tunnels removed successfully.[/green]")
+
+
+def sync_tunnels(silent: bool = False):
+    """Syncs the state of tunnels, cleaning up stale entries."""
+    tunnels = load_tunnels()
+    if not tunnels:
+        if not silent:
+            console.print("No tunnels to sync.")
+        return
+
+    stale_count = 0
+    with console.status("[bold green]Syncing tunnel states...[/]"):
+        tunnels_to_check = list(tunnels.items())
+        for tunnel_id, details in tunnels_to_check:
+            pid = details.get("pid")
+            if pid and not is_process_running(pid, details):
+                if not silent:
+                    console.print(
+                        f"[yellow]Stale PID found for tunnel '{tunnel_id}'. Cleaning up.[/yellow]"
+                    )
+                # Remove stale PID info from the original dict
+                del tunnels[tunnel_id]["pid"]
+                if "pid_file" in tunnels[tunnel_id]:
+                    del tunnels[tunnel_id]["pid_file"]
+                stale_count += 1
+
+    if stale_count > 0:
+        save_tunnels(tunnels)
+        if not silent:
+            console.print(
+                f"✅ [green]Sync complete. Cleaned up {stale_count} stale tunnel(s).[/green]"
+            )
+    else:
+        if not silent:
+            console.print("✅ [green]All tunnels are in sync.[/green]")

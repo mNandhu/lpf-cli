@@ -52,6 +52,12 @@ def remove_tunnel_command(
         raise typer.Exit(code=1)
 
 
+@app.command("sync", help="Sync the state of tunnels with the system")
+def sync_tunnels_command():
+    """Sync the state of tunnels with the system."""
+    commands.sync_tunnels()
+
+
 def main():
     """Main entry point for the lpf-cli command."""
     ensure_config_dirs()
