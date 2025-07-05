@@ -138,7 +138,7 @@ def add_tunnel(
         )
         save_tunnels(tunnels)
         console.print(
-            f"✅ [green]Tunnel '{tunnel_id}' started successfully with PID {pid}.[/green]"
+            f"[green]Tunnel '{tunnel_id}' started successfully with PID {pid}.[/green]"
         )
     else:
         # Clean up the failed tunnel entry
@@ -170,7 +170,7 @@ def list_tunnels():
     for tunnel_id, details in sorted(tunnels.items()):
         pid = details.get("pid")
         is_running = is_process_running(pid, details)
-        status = "[green]● ACTIVE[/green]" if is_running else "[red]● INACTIVE[/red]"
+        status = "[green]ACTIVE[/green]" if is_running else "[red]INACTIVE[/red]"
         forwarding_str = (
             f"localhost:{details['local_port']} -> localhost:{details['remote_port']}"
         )
@@ -213,7 +213,7 @@ def remove_tunnel(tunnel_id: str):
     del tunnels[tunnel_id]
     save_tunnels(tunnels)
 
-    console.print(f"✅ [green]Tunnel '{tunnel_id}' removed successfully.[/green]")
+    console.print(f"[green]Tunnel '{tunnel_id}' removed successfully.[/green]")
 
 
 def remove_all_tunnels():
@@ -227,7 +227,7 @@ def remove_all_tunnels():
     for tunnel_id in list(tunnels.keys()):
         remove_tunnel(tunnel_id)
 
-    console.print("✅ [green]All tunnels removed successfully.[/green]")
+    console.print("[green]All tunnels removed successfully.[/green]")
 
 
 def restart_tunnels(force: bool = False):
@@ -272,10 +272,10 @@ def restart_tunnels(force: bool = False):
     if restarted_count > 0:
         save_tunnels(tunnels)
         console.print(
-            f"✅ [green]Finished. Restarted {restarted_count} tunnel(s).[/green]"
+            f"[green]Finished. Restarted {restarted_count} tunnel(s).[/green]"
         )
     else:
-        console.print("✅ [green]No tunnels needed restarting.[/green]")
+        console.print("[green]No tunnels needed restarting.[/green]")
 
 
 def sync_tunnels(silent: bool = False):
@@ -306,8 +306,8 @@ def sync_tunnels(silent: bool = False):
         save_tunnels(tunnels)
         if not silent:
             console.print(
-                f"✅ [green]Sync complete. Cleaned up {stale_count} stale tunnel(s).[/green]"
+                f"[green]Sync complete. Cleaned up {stale_count} stale tunnel(s).[/green]"
             )
     else:
         if not silent:
-            console.print("✅ [green]All tunnels are in sync.[/green]")
+            console.print("[green]All tunnels are in sync.[/green]")
