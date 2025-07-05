@@ -58,10 +58,17 @@ def remove_tunnel_command(
         raise typer.Exit(code=1)
 
 
-@app.command("restart", help="Restart all inactive tunnels")
-def restart_tunnels_command():
-    """Restart all inactive tunnels."""
-    commands.restart_all_inactive()
+@app.command("restart", help="Restart all tunnels")
+def restart_tunnels_command(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force restart of all tunnels, even active ones.",
+    ),
+):
+    """Restart all tunnels."""
+    commands.restart_tunnels(force)
 
 
 @app.command("sync", help="Sync the state of tunnels with the system")

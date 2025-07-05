@@ -118,9 +118,7 @@ def add_tunnel(
     tunnel_id = f"{ssh_host}:{local_port}"
 
     if tunnel_id in tunnels:
-        console.print(
-            f"[bold red]Error:[/] A tunnel for {tunnel_id} already exists."
-        )
+        console.print(f"[bold red]Error:[/] A tunnel for {tunnel_id} already exists.")
         sys.exit(1)
 
     # Create the tunnel configuration
@@ -232,17 +230,33 @@ def remove_all_tunnels():
     console.print("✅ [green]All tunnels removed successfully.[/green]")
 
 
-def restart_all_inactive():
-    """Finds all inactive tunnels and restarts them."""
+def restart_tunnels(force: bool = False):
+    """Finds all inactive tunnels and restarts them. With --force, restarts all tunnels."""
     sync_tunnels(silent=True)
     tunnels = load_tunnels()
     restarted_count = 0
 
-    console.print("Checking for inactive tunnels to restart...")
+    if force:
+        console.print("Forcing restart of all tunnels...")
+    else:
+        console.print("Checking for inactive tunnels to restart...")
 
-    for tunnel_id, details in tunnels.items():
-        if not is_process_running(details.get("pid"), details):
-            console.print(f"Restarting inactive tunnel: [cyan]{tunnel_id}[/cyan]")
+    for tunnel_id, details in list(tunnels.items()):
+        is_running = is_process_running(details.get("pid"), details)
+
+        if force and is_running:
+            console.print(f"Stopping active tunnel: [cyan]{tunnel_id}[/cyan]")
+            # Stop the process without removing the config
+            pid = details.get("pid")
+            try:
+                os.kill(pid, 15)  # Send SIGTERM
+                time.sleep(0.5)  # Give it a moment to die
+            except OSError:
+                pass  # Already dead, probably
+
+        # Start if it was forced or if it was inactive
+        if force or not is_running:
+            console.print(f"Starting tunnel: [cyan]{tunnel_id}[/cyan]")
             pid = _start_tunnel_process(tunnel_id, details)
             if pid:
                 tunnels[tunnel_id]["pid"] = pid
@@ -261,7 +275,7 @@ def restart_all_inactive():
             f"✅ [green]Finished. Restarted {restarted_count} tunnel(s).[/green]"
         )
     else:
-        console.print("✅ [green]No inactive tunnels found.[/green]")
+        console.print("✅ [green]No tunnels needed restarting.[/green]")
 
 
 def sync_tunnels(silent: bool = False):
