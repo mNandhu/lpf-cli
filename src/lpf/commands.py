@@ -18,12 +18,10 @@ from .utils import (
 from .config import PID_DIR
 
 
-def add_tunnel(args):
+def add_tunnel(ssh_host: str, local_port: int, remote_port: int | None):
     """Handler for the 'add' command."""
-    ssh_host = args.ssh_host
-    local_port = args.local_port
     # If remote_port isn't specified, it defaults to local_port
-    remote_port = args.remote_port if args.remote_port else local_port
+    remote_port = remote_port if remote_port else local_port
 
     if is_port_in_use(local_port):
         _print(f"[bold red]Error:[/] Local port {local_port} is already in use.")
@@ -114,7 +112,7 @@ def add_tunnel(args):
     )
 
 
-def list_tunnels(args):
+def list_tunnels():
     """Handler for the 'ls' command."""
     tunnels = load_tunnels()
     if not tunnels:
