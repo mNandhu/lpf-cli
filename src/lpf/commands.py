@@ -19,17 +19,44 @@ from .utils import (
 from .config import PID_DIR
 
 
-def add_tunnel(ssh_host: str, local_port: int, remote_port: int | None):
+def add_tunnel(
+    ssh_host: str, local_port: int, remote_port: int | None, force: bool = False
+):
     """Handler for the 'add' command."""
     # If remote_port isn't specified, it defaults to local_port
     remote_port = remote_port if remote_port else local_port
+    tunnels = load_tunnels()
 
+    # --- Force Logic ---
     if is_port_in_use(local_port):
-        console.print(f"[bold red]Error:[/] Local port {local_port} is already in use.")
-        sys.exit(1)
+        if force:
+            # Find and remove the existing tunnel using this local port
+            existing_tunnel_id = None
+            for tid, details in tunnels.items():
+                if details.get("local_port") == local_port:
+                    existing_tunnel_id = tid
+                    break
+
+            if existing_tunnel_id:
+                console.print(
+                    f"[yellow]Port {local_port} is in use by tunnel '{existing_tunnel_id}'. Forcing removal.[/yellow]"
+                )
+                remove_tunnel(existing_tunnel_id)
+                # Reload tunnels state after removal
+                tunnels = load_tunnels()
+            else:
+                # Port is in use by an external process
+                console.print(
+                    f"[bold red]Error:[/] Local port {local_port} is in use by an external process. Cannot override."
+                )
+                sys.exit(1)
+        else:
+            console.print(
+                f"[bold red]Error:[/] Local port {local_port} is already in use. Use --force to override."
+            )
+            sys.exit(1)
 
     tunnel_id = f"{ssh_host}:{local_port}"
-    tunnels = load_tunnels()
 
     if tunnel_id in tunnels and is_process_running(
         tunnels[tunnel_id].get("pid"), tunnels[tunnel_id]
