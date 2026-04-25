@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import typer
 from . import commands
-from .utils import ensure_config_dirs, console
+from .utils import ensure_config_dirs, console, load_tunnels
+
+
+def _complete_tunnel_id(incomplete: str):
+    return [tid for tid in load_tunnels() if tid.startswith(incomplete)]
 
 app = typer.Typer(
     name="lpf",
@@ -40,7 +44,9 @@ def list_tunnels_command():
 @app.command("rm", help="Stop and remove a tunnel")
 def remove_tunnel_command(
     tunnel_id: str = typer.Argument(
-        None, help="The ID of the tunnel to remove (e.g., user@hostname:port)"
+        None,
+        help="The ID of the tunnel to remove (e.g., user@hostname:port)",
+        autocompletion=_complete_tunnel_id,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Remove all configured tunnels."
@@ -61,7 +67,9 @@ def remove_tunnel_command(
 @app.command("stop", help="Temporarily stop a tunnel without removing it")
 def stop_tunnel_command(
     tunnel_id: str = typer.Argument(
-        None, help="The ID of the tunnel to stop (e.g., user@hostname:port)"
+        None,
+        help="The ID of the tunnel to stop (e.g., user@hostname:port)",
+        autocompletion=_complete_tunnel_id,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Stop all configured tunnels."
@@ -82,7 +90,9 @@ def stop_tunnel_command(
 @app.command("start", help="Start a stopped or inactive tunnel")
 def start_tunnel_command(
     tunnel_id: str = typer.Argument(
-        None, help="The ID of the tunnel to start (e.g., user@hostname:port)"
+        None,
+        help="The ID of the tunnel to start (e.g., user@hostname:port)",
+        autocompletion=_complete_tunnel_id,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Start all configured tunnels."
