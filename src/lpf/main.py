@@ -58,6 +58,48 @@ def remove_tunnel_command(
         raise typer.Exit(code=1)
 
 
+@app.command("stop", help="Temporarily stop a tunnel without removing it")
+def stop_tunnel_command(
+    tunnel_id: str = typer.Argument(
+        None, help="The ID of the tunnel to stop (e.g., user@hostname:port)"
+    ),
+    all: bool = typer.Option(
+        False, "--all", "-a", help="Stop all configured tunnels."
+    ),
+):
+    """Temporarily stop a tunnel without removing it."""
+    if all:
+        commands.stop_all_tunnels()
+    elif tunnel_id:
+        commands.stop_tunnel(tunnel_id)
+    else:
+        console.print(
+            "[bold red]Error:[/] Please provide a tunnel ID or use the --all flag."
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command("start", help="Start a stopped or inactive tunnel")
+def start_tunnel_command(
+    tunnel_id: str = typer.Argument(
+        None, help="The ID of the tunnel to start (e.g., user@hostname:port)"
+    ),
+    all: bool = typer.Option(
+        False, "--all", "-a", help="Start all configured tunnels."
+    ),
+):
+    """Start a stopped or inactive tunnel."""
+    if all:
+        commands.start_all_tunnels()
+    elif tunnel_id:
+        commands.start_tunnel(tunnel_id)
+    else:
+        console.print(
+            "[bold red]Error:[/] Please provide a tunnel ID or use the --all flag."
+        )
+        raise typer.Exit(code=1)
+
+
 @app.command("restart", help="Restart all tunnels")
 def restart_tunnels_command(
     force: bool = typer.Option(

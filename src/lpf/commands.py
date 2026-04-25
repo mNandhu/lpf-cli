@@ -168,9 +168,12 @@ def list_tunnels():
     table.add_column("FORWARDING", style="yellow", min_width=30)
 
     for tunnel_id, details in sorted(tunnels.items()):
-        pid = details.get("pid")
-        is_running = is_process_running(pid, details)
-        status = "[green]ACTIVE[/green]" if is_running else "[red]INACTIVE[/red]"
+        if details.get("stopped"):
+            status = "[yellow]STOPPED[/yellow]"
+        elif is_process_running(details.get("pid"), details):
+            status = "[green]ACTIVE[/green]"
+        else:
+            status = "[red]INACTIVE[/red]"
         forwarding_str = (
             f"localhost:{details['local_port']} -> localhost:{details['remote_port']}"
         )
@@ -230,8 +233,99 @@ def remove_all_tunnels():
     console.print("[green]All tunnels removed successfully.[/green]")
 
 
+def stop_tunnel(tunnel_id: str):
+    """Handler for the 'stop' command - temporarily stops a tunnel without removing it."""
+    tunnels = load_tunnels()
+
+    if tunnel_id not in tunnels:
+        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
+        sys.exit(1)
+
+    details = tunnels[tunnel_id]
+
+    if details.get("stopped"):
+        console.print(f"[yellow]Tunnel '{tunnel_id}' is already stopped.[/yellow]")
+        return
+
+    pid = details.get("pid")
+    if pid and is_process_running(pid, details):
+        console.print(f"Stopping tunnel '{tunnel_id}' (PID: {pid})...")
+        try:
+            os.kill(pid, 15)  # SIGTERM
+        except OSError as e:
+            console.print(f"[bold red]Error:[/] Failed to stop process {pid}: {e}")
+
+    pid_file_path = details.get("pid_file")
+    if pid_file_path:
+        try:
+            os.remove(pid_file_path)
+        except (FileNotFoundError, OSError):
+            pass
+
+    tunnels[tunnel_id].pop("pid", None)
+    tunnels[tunnel_id].pop("pid_file", None)
+    tunnels[tunnel_id]["stopped"] = True
+    save_tunnels(tunnels)
+    console.print(
+        f"[green]Tunnel '{tunnel_id}' stopped. Use 'lpf start {tunnel_id}' to resume.[/green]"
+    )
+
+
+def stop_all_tunnels():
+    """Handler for 'stop --all'."""
+    tunnels = load_tunnels()
+    if not tunnels:
+        console.print("No tunnels to stop.")
+        return
+
+    console.print(f"Stopping all {len(tunnels)} tunnels...")
+    for tunnel_id in list(tunnels.keys()):
+        stop_tunnel(tunnel_id)
+
+
+def start_tunnel(tunnel_id: str):
+    """Handler for the 'start' command - starts a stopped or inactive tunnel."""
+    tunnels = load_tunnels()
+
+    if tunnel_id not in tunnels:
+        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
+        sys.exit(1)
+
+    details = tunnels[tunnel_id]
+
+    if not details.get("stopped") and is_process_running(details.get("pid"), details):
+        console.print(f"[yellow]Tunnel '{tunnel_id}' is already running.[/yellow]")
+        return
+
+    pid = _start_tunnel_process(tunnel_id, details)
+    if pid:
+        tunnels[tunnel_id]["pid"] = pid
+        tunnels[tunnel_id]["pid_file"] = str(
+            PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
+        )
+        tunnels[tunnel_id].pop("stopped", None)
+        save_tunnels(tunnels)
+        console.print(
+            f"[green]Tunnel '{tunnel_id}' started with PID {pid}.[/green]"
+        )
+    else:
+        sys.exit(1)
+
+
+def start_all_tunnels():
+    """Handler for 'start --all'."""
+    tunnels = load_tunnels()
+    if not tunnels:
+        console.print("No tunnels configured.")
+        return
+
+    console.print(f"Starting all {len(tunnels)} tunnels...")
+    for tunnel_id in list(tunnels.keys()):
+        start_tunnel(tunnel_id)
+
+
 def restart_tunnels(force: bool = False):
-    """Finds all inactive tunnels and restarts them. With --force, restarts all tunnels."""
+    """Finds all inactive tunnels and restarts them. With --force, restarts all (including stopped)."""
     sync_tunnels(silent=True)
     tunnels = load_tunnels()
     restarted_count = 0
@@ -242,6 +336,10 @@ def restart_tunnels(force: bool = False):
         console.print("Checking for inactive tunnels to restart...")
 
     for tunnel_id, details in list(tunnels.items()):
+        # Skip intentionally stopped tunnels unless forcing
+        if details.get("stopped") and not force:
+            continue
+
         is_running = is_process_running(details.get("pid"), details)
 
         if force and is_running:
@@ -263,6 +361,7 @@ def restart_tunnels(force: bool = False):
                 tunnels[tunnel_id]["pid_file"] = str(
                     PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
                 )
+                tunnels[tunnel_id].pop("stopped", None)
                 restarted_count += 1
             else:
                 console.print(
@@ -290,6 +389,8 @@ def sync_tunnels(silent: bool = False):
     with console.status("[bold green]Syncing tunnel states...[/]"):
         tunnels_to_check = list(tunnels.items())
         for tunnel_id, details in tunnels_to_check:
+            if details.get("stopped"):
+                continue
             pid = details.get("pid")
             if pid and not is_process_running(pid, details):
                 if not silent:
