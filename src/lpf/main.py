@@ -6,7 +6,7 @@ from .utils import ensure_config_dirs, console
 app = typer.Typer(
     name="lpf",
     help="A CLI tool to manage local port forwarding tunnels with autossh.",
-    add_completion=False,
+    add_completion=True,
 )
 
 
