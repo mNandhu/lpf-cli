@@ -10,6 +10,7 @@ from rich.table import Table
 
 from .utils import (
     console,
+    forward_spec,
     is_port_in_use,
     is_process_running,
     load_tunnels,
@@ -24,8 +25,10 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
     safe_filename = sanitize_filename(tunnel_id)
     pid_file = PID_DIR / f"{safe_filename}.pid"
 
+    remote_host = details.get("remote_host") or "localhost"
     console.print(
-        f"Starting tunnel: localhost:{details['local_port']} -> {details['ssh_host']}:{details['remote_port']}"
+        f"Starting tunnel: localhost:{details['local_port']} -> "
+        f"{details['ssh_host']}:{remote_host}:{details['remote_port']}"
     )
 
     command = [
@@ -39,7 +42,7 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
         "-o",
         "ServerAliveCountMax=3",
         "-L",
-        f"{details['local_port']}:localhost:{details['remote_port']}",
+        forward_spec(details),
         details["ssh_host"],
     ]
 
@@ -79,7 +82,11 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
 
 
 def add_tunnel(
-    ssh_host: str, local_port: int, remote_port: int | None, force: bool = False
+    ssh_host: str,
+    local_port: int,
+    remote_port: int | None,
+    force: bool = False,
+    remote_host: str = "localhost",
 ):
     """Handler for the 'add' command."""
     # If remote_port isn't specified, it defaults to local_port
@@ -126,6 +133,10 @@ def add_tunnel(
         "local_port": local_port,
         "remote_port": remote_port,
         "ssh_host": ssh_host,
+        # Resolved on the SSH server, not here: "localhost" means the server
+        # itself, anything else is a host the server can reach (a container IP,
+        # another machine on its network).
+        "remote_host": remote_host,
     }
 
     # Start the tunnel process
@@ -174,8 +185,10 @@ def list_tunnels():
             status = "[green]ACTIVE[/green]"
         else:
             status = "[red]INACTIVE[/red]"
+        remote_host = details.get("remote_host") or "localhost"
         forwarding_str = (
-            f"localhost:{details['local_port']} -> localhost:{details['remote_port']}"
+            f"localhost:{details['local_port']} -> "
+            f"{remote_host}:{details['remote_port']}"
         )
         table.add_row(tunnel_id, status, forwarding_str)
 

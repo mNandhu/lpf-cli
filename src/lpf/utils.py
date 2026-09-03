@@ -59,6 +59,17 @@ def is_port_in_use(port):
                 return True
 
 
+def forward_spec(details: dict) -> str:
+    """Build the autossh -L argument for a tunnel.
+
+    remote_host defaults to "localhost" so tunnels saved before -H existed keep
+    producing the string their running process was started with -- otherwise
+    is_process_running would read every one of them as a stale PID.
+    """
+    remote_host = details.get("remote_host") or "localhost"
+    return f"{details['local_port']}:{remote_host}:{details['remote_port']}"
+
+
 def is_process_running(pid, tunnel_details=None):
     """
     Check if a process with the given PID is running.
@@ -78,7 +89,7 @@ def is_process_running(pid, tunnel_details=None):
                 # cmdline is null-byte separated
                 cmdline = f.read().strip().split("\0")
             # Check if it's an autossh command for the correct port and host
-            expected_l_flag = f"{tunnel_details['local_port']}:localhost:{tunnel_details['remote_port']}"
+            expected_l_flag = forward_spec(tunnel_details)
             if (
                 "autossh" in cmdline[0]
                 and expected_l_flag in cmdline

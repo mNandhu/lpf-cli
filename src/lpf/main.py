@@ -30,9 +30,17 @@ def add_tunnel_command(
         "-f",
         help="Force creation, removing any existing tunnel on the same local port.",
     ),
+    remote_host: str = typer.Option(
+        "localhost",
+        "--remote-host",
+        "-H",
+        help="Host the SSH server forwards to (defaults to the server itself). "
+        "Use this to reach something the server can see but does not listen on, "
+        "e.g. a container IP.",
+    ),
 ):
     """Add and start a new tunnel."""
-    commands.add_tunnel(ssh_host, local_port, remote_port, force)
+    commands.add_tunnel(ssh_host, local_port, remote_port, force, remote_host)
 
 
 @app.command("ls", help="List all configured tunnels and their status")

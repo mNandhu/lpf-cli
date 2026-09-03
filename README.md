@@ -1,47 +1,67 @@
 # lpf-cli
 
-A CLI tool to manage local port forwarding tunnels with `autossh`.
+A lightweight CLI tool for managing SSH port forwarding tunnels with `autossh`. Create, control, and monitor persistent local port forwarding with ease.
 
 ## Features
 
-- Add and start new SSH tunnels.
-- List all configured tunnels and their status.
-- Persistent state management.
-- Beautiful and informative output, powered by Rich.
+- **Simple tunnel management:** Add, list, start, stop, and remove SSH tunnels
+- **Persistent state:** Tunnels survive shell restarts and system reboots
+- **Lifecycle control:** Manage individual tunnels or batch operations
+- **System sync:** Auto-cleanup of stale tunnel processes
+- **Rich output:** Clear, formatted terminal display
+- **Autocompletion:** Shell completion for tunnel IDs and commands
+
+## Requirements
+
+- `autossh` installed on your system
+- Python 3.12+
 
 ## Installation
+
+### Using `uv` (recommended)
 
 ```bash
 uv pip install .
 ```
 
-Or for development:
+For development:
 
 ```bash
 uv pip install -e .
 ```
 
-You can also just use pip directly.
+### Using `pip`
+
+```bash
+pip install .
+```
 
 ## Usage
 
-### Add a new tunnel
+### Add a tunnel
 
 ```bash
-lpf add <SSH_HOST> <LOCAL_PORT> [-r <REMOTE_PORT>]
+lpf add <SSH_HOST> <LOCAL_PORT> [-r <REMOTE_PORT>] [--force]
 ```
 
-- `SSH_HOST`: The SSH host (e.g., `user@hostname`).
-- `LOCAL_PORT`: The local port to forward from.
-- `REMOTE_PORT`: The remote port to forward to (defaults to `LOCAL_PORT`).
+- `<SSH_HOST>`: SSH host (e.g., `user@hostname`)
+- `<LOCAL_PORT>`: Local port to forward from
+- `-r, --remote-port`: Remote port (defaults to local port)
+- `-H, --remote-host`: Host the SSH server forwards to (defaults to `localhost`, i.e. the server itself)
+- `-f, --force`: Remove any existing tunnel on the same local port
 
 Example:
-
 ```bash
-lpf add my-server.com 8080 -r 80
+lpf add user@server.com 8080 -r 80
 ```
 
-This will forward `localhost:8080` to `my-server.com:80`.
+`-H` is resolved **on the SSH server**, so it reaches anything the server can
+see but does not itself listen on -- a container IP, another machine on its
+network:
+
+```bash
+lpf add user@server.com 3000 -r 3000 -H 172.24.0.2
+```
 
 ### List tunnels
 
@@ -49,4 +69,36 @@ This will forward `localhost:8080` to `my-server.com:80`.
 lpf ls
 ```
 
-This will display a table of all configured tunnels and their current status (active/inactive).
+Displays table of all configured tunnels with status and port mappings.
+
+### Control tunnels
+
+Stop a tunnel:
+```bash
+lpf stop <TUNNEL_ID>
+lpf stop --all
+```
+
+Start a tunnel:
+```bash
+lpf start <TUNNEL_ID>
+lpf start --all
+```
+
+Remove a tunnel:
+```bash
+lpf rm <TUNNEL_ID>
+lpf rm --all
+```
+
+### Other commands
+
+Restart all tunnels:
+```bash
+lpf restart [--force]
+```
+
+Sync tunnel state with system:
+```bash
+lpf sync
+```
