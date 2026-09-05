@@ -93,34 +93,42 @@ def add_tunnel(
     remote_port = remote_port if remote_port else local_port
     tunnels = load_tunnels()
 
-    # --- Force Logic ---
-    if is_port_in_use(local_port):
-        if force:
-            # Find and remove the existing tunnel using this local port
-            existing_tunnel_id = None
-            for tid, details in tunnels.items():
-                if details.get("local_port") == local_port:
-                    existing_tunnel_id = tid
-                    break
+    # --- Conflict detection ---
+    # Check lpf's own registered tunnels first: a stopped/inactive tunnel
+    # still "owns" its local_port even though nothing is bound to it at the
+    # OS level, so is_port_in_use() alone would miss the conflict.
+    existing_tunnel_id = next(
+        (tid for tid, d in tunnels.items() if d.get("local_port") == local_port),
+        None,
+    )
 
-            if existing_tunnel_id:
-                console.print(
-                    f"[yellow]Port {local_port} is in use by tunnel '{existing_tunnel_id}'. Forcing removal.[/yellow]"
-                )
-                remove_tunnel(existing_tunnel_id)
-                # Reload tunnels state after removal
-                tunnels = load_tunnels()
-            else:
-                # Port is in use by an external process
-                console.print(
-                    f"[bold red]Error:[/] Local port {local_port} is in use by an external process. Cannot override."
-                )
-                sys.exit(1)
+    if existing_tunnel_id:
+        if not force:
+            console.print(
+                f"[bold red]Error:[/] Local port {local_port} is already assigned to "
+                f"tunnel '{existing_tunnel_id}'. Use --force to replace it, or run "
+                f"'lpf rm {existing_tunnel_id}' first."
+            )
+            sys.exit(1)
+        console.print(
+            f"[yellow]Port {local_port} is already assigned to tunnel "
+            f"'{existing_tunnel_id}'. Forcing removal.[/yellow]"
+        )
+        remove_tunnel(existing_tunnel_id)
+        # Reload tunnels state after removal
+        tunnels = load_tunnels()
+    elif is_port_in_use(local_port):
+        # No lpf tunnel claims this port, so it's held by an external
+        # process -- force can't help here, there's nothing of ours to remove.
+        if force:
+            console.print(
+                f"[bold red]Error:[/] Local port {local_port} is in use by an external process. Cannot override."
+            )
         else:
             console.print(
                 f"[bold red]Error:[/] Local port {local_port} is already in use. Use --force to override."
             )
-            sys.exit(1)
+        sys.exit(1)
 
     tunnel_id = f"{ssh_host}:{local_port}"
 

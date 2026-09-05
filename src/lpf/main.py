@@ -7,6 +7,35 @@ from .utils import ensure_config_dirs, console, load_tunnels
 def _complete_tunnel_id(incomplete: str):
     return [tid for tid in load_tunnels() if tid.startswith(incomplete)]
 
+
+def _complete_port(ctx: typer.Context, incomplete: str):
+    """Complete PORT with local ports of tunnels matching the SSH host typed so far."""
+    ssh_host = ctx.params.get("tunnel_id")
+    ports = {
+        str(details["local_port"])
+        for details in load_tunnels().values()
+        if not ssh_host or details.get("ssh_host") == ssh_host
+    }
+    return [p for p in ports if p.startswith(incomplete)]
+
+
+def _resolve_tunnel_id(identifier: str | None, port: int | None) -> str | None:
+    """Combine `SSH_HOST PORT` into `SSH_HOST:PORT`, mirroring `lpf add`.
+
+    `identifier` may already be a full `host:port` tunnel ID; PORT is only
+    used when passed separately.
+    """
+    if port is None:
+        return identifier
+    if identifier and ":" in identifier:
+        console.print(
+            "[bold red]Error:[/] Got a full tunnel ID and a separate PORT. "
+            "Pass either 'SSH_HOST:PORT' or 'SSH_HOST PORT', not both."
+        )
+        raise typer.Exit(code=1)
+    return f"{identifier}:{port}"
+
+
 app = typer.Typer(
     name="lpf",
     help="A CLI tool to manage local port forwarding tunnels with autossh.",
@@ -51,16 +80,22 @@ def list_tunnels_command():
 
 @app.command("rm", help="Stop and remove a tunnel")
 def remove_tunnel_command(
-    tunnel_id: str = typer.Argument(
+    tunnel_id: str | None = typer.Argument(
         None,
-        help="The ID of the tunnel to remove (e.g., user@hostname:port)",
+        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
         autocompletion=_complete_tunnel_id,
+    ),
+    port: int | None = typer.Argument(
+        None,
+        help="The local port, if SSH_HOST was given without ':port' (e.g., lpf rm user@hostname 8080)",
+        autocompletion=_complete_port,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Remove all configured tunnels."
     ),
 ):
     """Stop and remove a tunnel."""
+    tunnel_id = _resolve_tunnel_id(tunnel_id, port)
     if all:
         commands.remove_all_tunnels()
     elif tunnel_id:
@@ -74,16 +109,22 @@ def remove_tunnel_command(
 
 @app.command("stop", help="Temporarily stop a tunnel without removing it")
 def stop_tunnel_command(
-    tunnel_id: str = typer.Argument(
+    tunnel_id: str | None = typer.Argument(
         None,
-        help="The ID of the tunnel to stop (e.g., user@hostname:port)",
+        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
         autocompletion=_complete_tunnel_id,
+    ),
+    port: int | None = typer.Argument(
+        None,
+        help="The local port, if SSH_HOST was given without ':port' (e.g., lpf stop user@hostname 8080)",
+        autocompletion=_complete_port,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Stop all configured tunnels."
     ),
 ):
     """Temporarily stop a tunnel without removing it."""
+    tunnel_id = _resolve_tunnel_id(tunnel_id, port)
     if all:
         commands.stop_all_tunnels()
     elif tunnel_id:
@@ -97,16 +138,22 @@ def stop_tunnel_command(
 
 @app.command("start", help="Start a stopped or inactive tunnel")
 def start_tunnel_command(
-    tunnel_id: str = typer.Argument(
+    tunnel_id: str | None = typer.Argument(
         None,
-        help="The ID of the tunnel to start (e.g., user@hostname:port)",
+        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
         autocompletion=_complete_tunnel_id,
+    ),
+    port: int | None = typer.Argument(
+        None,
+        help="The local port, if SSH_HOST was given without ':port' (e.g., lpf start user@hostname 8080)",
+        autocompletion=_complete_port,
     ),
     all: bool = typer.Option(
         False, "--all", "-a", help="Start all configured tunnels."
     ),
 ):
     """Start a stopped or inactive tunnel."""
+    tunnel_id = _resolve_tunnel_id(tunnel_id, port)
     if all:
         commands.start_all_tunnels()
     elif tunnel_id:
