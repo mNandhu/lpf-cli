@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from importlib.metadata import version
+
 import typer
 from . import commands
 from .utils import ensure_config_dirs, console, load_tunnels
@@ -41,6 +43,26 @@ app = typer.Typer(
     help="A CLI tool to manage local port forwarding tunnels with autossh.",
     add_completion=True,
 )
+
+
+def _version_callback(value: bool):
+    if value:
+        console.print(f"lpf {version('lpf-cli')}")
+        raise typer.Exit()
+
+
+@app.callback()
+def app_callback(
+    show_version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show the installed version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+):
+    pass
 
 
 @app.command("add", help="Add and start a new tunnel")
