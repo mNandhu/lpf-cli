@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "lpf-cli"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A CLI tool to manage local port forwarding tunnels with `autossh`, built with Typer and Rich."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -15,6 +15,11 @@ dependencies = [
 
 [project.scripts]
 lpf = "lpf.main:main"
+
+[tool.hatch.version]
+source = "vcs"
+# Used when there is no git metadata, e.g. building from a source zip download.
+fallback-version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lpf"]
