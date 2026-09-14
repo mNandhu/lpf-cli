@@ -23,6 +23,9 @@ lpf add myserver 8765
 # see what's running
 lpf ls
 
+# if it didn't connect, see why
+lpf logs myserver:8765
+
 # remove it
 lpf rm myserver:8765
 ```
@@ -35,23 +38,33 @@ completion is available once you set it up (see
 
 - Tunnels run as detached `autossh` processes, so they don't need a tty, tmux,
   or an open terminal.
+- `lpf add` waits until the tunnel is actually forwarding. If ssh can't
+  connect, it tells you why (an unknown host, a rejected key) instead of
+  reporting success.
 - If a connection dies, `autossh` notices within about 90 seconds and
   reconnects. It keeps retrying even when the very first connection attempt
   fails.
 - Hosts are resolved through your normal SSH setup, so `~/.ssh/config`
   aliases, keys, and `ProxyJump` all work.
 - You can add, list, stop, start, and remove tunnels one at a time or all at
-  once.
+  once, and add several ports on the same host in one command.
+- `lpf logs` shows each tunnel's autossh and ssh output.
 - Tunnel definitions are saved to disk. The processes don't survive a reboot,
-  but `lpf restart` brings them back.
-- `lpf sync` cleans up records of tunnel processes that have died.
+  but `lpf restart` brings them back, and `lpf autostart enable` does that
+  for you at login.
 - `lpf ls` prints a table of tunnels with their status and port mappings.
-- Shell completion covers commands, options, and your tunnel IDs.
+- Shell completion covers commands, options, your tunnel IDs, and the hosts
+  in `~/.ssh/config`.
 
 ## Requirements
 
-- `autossh` (for example `apt install autossh` or `brew install autossh`)
+- `autossh` (for example `apt install autossh` or `brew install autossh`).
+  Without it, `lpf` stops with an error that says how to install it.
 - Python 3.12+
+- SSH access that works without a prompt, meaning a key without a passphrase
+  or one loaded in `ssh-agent`. Tunnels run in the background with no terminal
+  to type a password into, so `lpf` runs ssh with `BatchMode=yes` and a
+  password prompt becomes an error you can read in `lpf logs`.
 
 ## Installation
 
@@ -102,20 +115,34 @@ pip install git+https://github.com/mNandhu/lpf-cli.git
 ### Add a tunnel
 
 ```bash
-lpf add <SSH_HOST> <LOCAL_PORT> [-r <REMOTE_PORT>] [-H <REMOTE_HOST>] [--force]
+lpf add <SSH_HOST> <LOCAL_PORT>... [-r <REMOTE_PORT>] [-H <REMOTE_HOST>] [--force]
 ```
 
 - `<SSH_HOST>`: SSH host, such as `user@hostname` or an alias from `~/.ssh/config`
-- `<LOCAL_PORT>`: local port to forward from
-- `-r, --remote-port`: remote port (defaults to the local port)
+- `<LOCAL_PORT>...`: one or more local ports to forward from. Each port becomes its own tunnel.
+- `-r, --remote-port`: remote port (defaults to the local port). Only works with a single local port.
 - `-H, --remote-host`: host the SSH server forwards to (defaults to `localhost`, meaning the server itself)
 - `-f, --force`: remove any existing tunnel on the same local port first
 
-Example:
+Examples:
 
 ```bash
 lpf add user@server.com 8080 -r 80
+lpf add myserver 8000 8001 8002
 ```
+
+After starting a tunnel, `add` waits up to 15 seconds for its local port to
+start listening. When ssh fails, you see its error right away:
+
+```
+Error: Tunnel 'myserver:8080' is not connected: ssh: Could not resolve hostname myserver: Name or service not known
+autossh keeps retrying in the background. See 'lpf logs myserver:8080' for details, or remove it with 'lpf rm myserver:8080'.
+```
+
+The tunnel stays registered and `autossh` keeps retrying, so it connects on
+its own once the host is reachable (after a VPN comes up, for example). If
+the host was a typo, remove it with `lpf rm`. `add` exits with status 1 when
+any tunnel failed.
 
 If another registered tunnel already uses `<LOCAL_PORT>` (running or stopped),
 `add` refuses and tells you which tunnel it is. Pass `-f/--force` to remove
@@ -136,7 +163,16 @@ lpf add user@server.com 3000 -r 3000 -H 172.24.0.2
 lpf ls
 ```
 
-This shows every configured tunnel with its status and port mapping.
+This shows every configured tunnel with its status and port mapping. The
+status is one of:
+
+- `ACTIVE`: `autossh` is running and the local port is listening, which
+  means ssh connected and set up the forward.
+- `CONNECTING`: `autossh` is running but ssh isn't connected yet, for
+  example because the host is down. `lpf logs` shows why.
+- `STOPPED`: stopped with `lpf stop`.
+- `INACTIVE`: the process is gone, for example after a reboot. `lpf restart`
+  starts it again.
 
 ### Stop, start, and remove tunnels
 
@@ -165,6 +201,10 @@ lpf start <SSH_HOST> <PORT>
 lpf start --all
 ```
 
+`start --all` keeps going when one tunnel fails, then exits with status 1.
+Like `add`, `start` waits for tunnels to connect. Pass `--no-wait` to return
+as soon as the processes are running.
+
 Remove a tunnel:
 
 ```bash
@@ -179,7 +219,7 @@ Restart tunnels that aren't running. Tunnels you stopped on purpose are
 skipped unless you pass `--force`, which restarts everything:
 
 ```bash
-lpf restart [--force]
+lpf restart [--force] [--no-wait]
 ```
 
 Sync the saved tunnel state with the processes actually running:
@@ -187,6 +227,48 @@ Sync the saved tunnel state with the processes actually running:
 ```bash
 lpf sync
 ```
+
+### Logs
+
+Each tunnel keeps a log of `autossh` and `ssh` output from its latest start.
+`logs` takes a tunnel ID the same way `stop`, `start`, and `rm` do:
+
+```bash
+lpf logs <TUNNEL_ID> [-n <LINES>] [--follow]
+lpf logs myserver 8765 -f
+```
+
+- `-n, --lines`: how many lines to show from the end (default 50)
+- `-f, --follow`: keep printing new lines until you press Ctrl+C
+
+The log is cleared each time the tunnel starts, and deleted by `lpf rm`.
+Tunnels started by an older version of `lpf` have no log until they're
+restarted.
+
+### Start tunnels at login
+
+On Linux with systemd, `lpf` can install a user service that runs
+`lpf restart --no-wait` when you log in:
+
+```bash
+lpf autostart enable
+lpf autostart status
+lpf autostart disable
+```
+
+Tunnels you stopped with `lpf stop` stay stopped. The service doesn't wait for
+the network, since `autossh` retries until it's up. To start tunnels at boot,
+before you log in, also run `loginctl enable-linger`.
+
+The service doesn't run in your shell, so it only sees the environment of the
+systemd user manager. If your keys live in `ssh-agent`, make sure that
+environment has the right `SSH_AUTH_SOCK` (check with
+`systemctl --user show-environment`). `lpf autostart enable` warns when it
+differs from your shell's.
+
+Disabling autostart leaves running tunnels alone. On macOS, and on Linux
+without systemd, `enable` prints a way to set it up yourself (a launchd agent
+or a `@reboot` cron line).
 
 ## Shell completion
 
@@ -198,9 +280,22 @@ lpf --install-completion
 ```
 
 Then restart your shell or `source` its rc file. After that, TAB completes
-commands and options, and `lpf rm <TAB>`, `lpf stop <TAB>`, and
-`lpf start <TAB>` list your tunnel IDs. If you type an `SSH_HOST` first, TAB
-on the second argument suggests that host's ports.
+commands and options. `lpf add <TAB>` lists the hosts in your
+`~/.ssh/config` (including files it `Include`s), and `lpf rm <TAB>`,
+`lpf stop <TAB>`, `lpf start <TAB>`, and `lpf logs <TAB>` list your tunnel
+IDs. If you type an `SSH_HOST` first, TAB on the second argument suggests that
+host's ports.
 
 If you'd rather not install it, `lpf --show-completion` prints the completion
 script so you can read it or source it yourself.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+```
+
+The tests don't need `autossh` or network access. Set `LPF_CONFIG_DIR` to
+keep `lpf` state somewhere other than `~/.config/lpf`, for example to try
+changes without touching your real tunnels.

@@ -2,9 +2,9 @@
 from importlib.metadata import version
 
 import typer
-from . import commands
+from . import autostart, commands
 from .update_check import maybe_notify
-from .utils import ensure_config_dirs, console, load_tunnels
+from .utils import ensure_config_dirs, console, load_tunnels, ssh_config_hosts
 
 
 def _complete_tunnel_id(incomplete: str):
@@ -20,6 +20,11 @@ def _complete_port(ctx: typer.Context, incomplete: str):
         if not ssh_host or details.get("ssh_host") == ssh_host
     }
     return [p for p in ports if p.startswith(incomplete)]
+
+
+def _complete_ssh_host(incomplete: str):
+    """Complete SSH_HOST with the Host aliases in ~/.ssh/config."""
+    return [host for host in ssh_config_hosts() if host.startswith(incomplete)]
 
 
 def _resolve_tunnel_id(identifier: str | None, port: int | None) -> str | None:
@@ -66,15 +71,30 @@ def app_callback(
     pass
 
 
-@app.command("add", help="Add and start a new tunnel")
+NO_WAIT_HELP = "Don't wait for tunnels to connect. autossh keeps retrying in the background."
+
+
+@app.command("add", help="Add and start new tunnels, one per local port")
 def add_tunnel_command(
-    ssh_host: str = typer.Argument(..., help="The SSH host (e.g., user@hostname)"),
-    local_port: int = typer.Argument(..., help="The local port to forward from"),
+    ssh_host: str = typer.Argument(
+        ...,
+        help="The SSH host (e.g., user@hostname or an alias from ~/.ssh/config)",
+        autocompletion=_complete_ssh_host,
+    ),
+    local_ports: list[int] = typer.Argument(
+        ...,
+        help="One or more local ports to forward from (e.g., lpf add myserver 8000 8001)",
+        min=1,
+        max=65535,
+    ),
     remote_port: int = typer.Option(
         None,
         "--remote-port",
         "-r",
-        help="The remote port to forward to (defaults to local_port)",
+        help="The remote port to forward to (defaults to the local port). "
+        "Only works with a single local port.",
+        min=1,
+        max=65535,
     ),
     force: bool = typer.Option(
         False,
@@ -91,8 +111,8 @@ def add_tunnel_command(
         "e.g. a container IP.",
     ),
 ):
-    """Add and start a new tunnel."""
-    commands.add_tunnel(ssh_host, local_port, remote_port, force, remote_host)
+    """Add and start new tunnels, one per local port."""
+    commands.add_tunnel(ssh_host, local_ports, remote_port, force, remote_host)
 
 
 @app.command("ls", help="List all configured tunnels and their status")
@@ -174,13 +194,14 @@ def start_tunnel_command(
     all: bool = typer.Option(
         False, "--all", "-a", help="Start all configured tunnels."
     ),
+    no_wait: bool = typer.Option(False, "--no-wait", help=NO_WAIT_HELP),
 ):
     """Start a stopped or inactive tunnel."""
     tunnel_id = _resolve_tunnel_id(tunnel_id, port)
     if all:
-        commands.start_all_tunnels()
+        commands.start_all_tunnels(wait=not no_wait)
     elif tunnel_id:
-        commands.start_tunnel(tunnel_id)
+        commands.start_tunnel(tunnel_id, wait=not no_wait)
     else:
         console.print(
             "[bold red]Error:[/] Please provide a tunnel ID or use the --all flag."
@@ -196,15 +217,63 @@ def restart_tunnels_command(
         "-f",
         help="Force restart of all tunnels, even active ones.",
     ),
+    no_wait: bool = typer.Option(False, "--no-wait", help=NO_WAIT_HELP),
 ):
     """Restart all tunnels."""
-    commands.restart_tunnels(force)
+    commands.restart_tunnels(force, wait=not no_wait)
 
 
 @app.command("sync", help="Sync the state of tunnels with the system")
 def sync_tunnels_command():
     """Sync the state of tunnels with the system."""
     commands.sync_tunnels()
+
+
+@app.command("logs", help="Show a tunnel's autossh and ssh log")
+def logs_command(
+    tunnel_id: str = typer.Argument(
+        ...,
+        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
+        autocompletion=_complete_tunnel_id,
+    ),
+    port: int | None = typer.Argument(
+        None,
+        help="The local port, if SSH_HOST was given without ':port' (e.g., lpf logs user@hostname 8080)",
+        autocompletion=_complete_port,
+    ),
+    lines: int = typer.Option(
+        50, "--lines", "-n", min=0, help="Number of lines to show from the end."
+    ),
+    follow: bool = typer.Option(
+        False, "--follow", "-f", help="Keep printing new lines as they're written."
+    ),
+):
+    """Show a tunnel's autossh and ssh log."""
+    resolved = _resolve_tunnel_id(tunnel_id, port)
+    assert resolved is not None
+    commands.show_logs(resolved, lines, follow)
+
+
+autostart_app = typer.Typer(
+    help="Start tunnels automatically at login or boot (systemd).",
+    no_args_is_help=True,
+)
+app.add_typer(autostart_app, name="autostart")
+
+
+@autostart_app.command("enable", help="Install and enable a systemd user service that runs 'lpf restart'")
+def autostart_enable_command():
+    autostart.enable()
+
+
+@autostart_app.command("disable", help="Remove the autostart service (running tunnels keep running)")
+def autostart_disable_command():
+    autostart.disable()
+
+
+@autostart_app.command("status", help="Show whether autostart is enabled")
+def autostart_status_command():
+    autostart.status()
 
 
 def main():

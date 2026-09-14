@@ -18,6 +18,7 @@ from importlib.metadata import version
 from rich.console import Console
 
 from .config import CONFIG_DIR
+from .utils import write_json_atomic
 
 CACHE_FILE = CONFIG_DIR / "update-check.json"
 TAGS_URL = "https://api.github.com/repos/mNandhu/lpf-cli/tags?per_page=100"
@@ -53,11 +54,7 @@ def _read_cache() -> dict:
 
 
 def _write_cache(cache: dict):
-    # Write to a temp file and rename, so a reader never sees a half-written file.
-    tmp_file = CACHE_FILE.with_suffix(f".{os.getpid()}.tmp")
-    with open(tmp_file, "w") as f:
-        json.dump(cache, f)
-    os.replace(tmp_file, CACHE_FILE)
+    write_json_atomic(CACHE_FILE, cache)
 
 
 def _fetch_latest_tag() -> str | None:

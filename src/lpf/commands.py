@@ -3,6 +3,8 @@ CLI command functions for lpf-cli.
 """
 
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -14,16 +16,40 @@ from .utils import (
     is_port_in_use,
     is_process_running,
     load_tunnels,
-    sanitize_filename,
+    log_file_path,
+    pid_file_path,
     save_tunnels,
 )
-from .config import PID_DIR
+
+# How long to wait for a new tunnel's local port to start listening.
+CONNECT_TIMEOUT = 15
+# How long to wait for a stopped tunnel to exit and free its port.
+STOP_TIMEOUT = 5
+# How long autossh gets to write its PID file after forking.
+PID_FILE_TIMEOUT = 5
+
+AUTOSSH_MISSING = (
+    "[bold red]Error:[/] autossh is not installed (or not on your PATH). "
+    "Install it with 'sudo apt install autossh' (Debian/Ubuntu), "
+    "'sudo dnf install autossh' (Fedora), or 'brew install autossh' (macOS)."
+)
 
 
-def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
-    """Starts the autossh process for a given tunnel and returns the PID."""
-    safe_filename = sanitize_filename(tunnel_id)
-    pid_file = PID_DIR / f"{safe_filename}.pid"
+def _wait_until(condition, timeout: float, interval: float = 0.1) -> bool:
+    """Poll `condition` until it returns True or `timeout` seconds pass."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if condition():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def _spawn_autossh(tunnel_id: str, details: dict) -> int | None:
+    """Start the autossh process for a tunnel and return its PID."""
+    pid_file = pid_file_path(tunnel_id)
+    log_file = log_file_path(tunnel_id)
 
     remote_host = details.get("remote_host") or "localhost"
     console.print(
@@ -41,6 +67,18 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
         "ServerAliveInterval=30",
         "-o",
         "ServerAliveCountMax=3",
+        # Exit (and let autossh retry) when the local port can't be bound,
+        # instead of staying connected without a working forward.
+        "-o",
+        "ExitOnForwardFailure=yes",
+        # The process is detached from any terminal, so a password or
+        # passphrase prompt could never be answered. Fail instead of hanging.
+        "-o",
+        "BatchMode=yes",
+        # ssh's own errors ("Could not resolve hostname", "Permission denied")
+        # go to the same log as autossh's messages.
+        "-E",
+        str(log_file),
         "-L",
         forward_spec(details),
         details["ssh_host"],
@@ -49,6 +87,14 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
     env = os.environ.copy()
     env["AUTOSSH_PIDFILE"] = str(pid_file)
     env["AUTOSSH_GATETIME"] = "0"
+    env["AUTOSSH_LOGFILE"] = str(log_file)
+
+    # Start each run with a fresh log, so it only holds this run's messages.
+    # Replace the file rather than truncating it, so `lpf logs -f` can tell a
+    # new run started (the file changes) even if it already wrote a lot.
+    log_file.unlink(missing_ok=True)
+    log_file.touch()
+    pid_file.unlink(missing_ok=True)
 
     result = subprocess.run(command, env=env, capture_output=True, text=True)
 
@@ -57,22 +103,17 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
         console.print(f"Stderr: {result.stderr.strip()}")
         return None
 
-    timeout = 5
-    start_time = time.time()
     pid = None
-    while time.time() - start_time < timeout:
-        if pid_file.exists():
-            with open(pid_file, "r") as f:
-                content = f.read().strip()
-                if content:
-                    try:
-                        pid = int(content)
-                        break
-                    except ValueError:
-                        pass
-        time.sleep(0.1)
 
-    if pid is None:
+    def read_pid() -> bool:
+        nonlocal pid
+        try:
+            pid = int(pid_file.read_text().strip())
+            return True
+        except (OSError, ValueError):
+            return False
+
+    if not _wait_until(read_pid, PID_FILE_TIMEOUT):
         console.print(
             "[bold red]Error:[/] PID file was not created in time. Tunnel may have failed to start."
         )
@@ -81,19 +122,153 @@ def _start_tunnel_process(tunnel_id: str, details: dict) -> int | None:
     return pid
 
 
-def add_tunnel(
-    ssh_host: str,
-    local_port: int,
-    remote_port: int | None,
-    force: bool = False,
-    remote_host: str = "localhost",
-):
-    """Handler for the 'add' command."""
-    # If remote_port isn't specified, it defaults to local_port
-    remote_port = remote_port if remote_port else local_port
-    tunnels = load_tunnels()
+def _last_ssh_error(tunnel_id: str) -> str | None:
+    """The latest ssh message in a tunnel's log, if ssh has exited since it started."""
+    try:
+        lines = log_file_path(tunnel_id).read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    if not any("ssh exited with error status" in line for line in lines):
+        return None
+    # autossh's own lines look like "2026/09/14 13:27:50 autossh[37061]: ...".
+    # Everything else came from ssh.
+    ssh_lines = [line for line in lines if line.strip() and " autossh[" not in line]
+    return ssh_lines[-1] if ssh_lines else "ssh exited with an error"
 
-    # --- Conflict detection ---
+
+def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> list[str]:
+    """Start autossh for each tunnel and save their PIDs.
+
+    With `wait`, also wait for each tunnel's local port to start listening,
+    which means ssh connected and set up the forward. Returns the IDs that
+    failed. A tunnel that started but didn't connect keeps running, because
+    autossh keeps retrying in the background.
+    """
+    if not tunnel_ids:
+        return []
+    if shutil.which("autossh") is None:
+        console.print(AUTOSSH_MISSING)
+        return list(tunnel_ids)
+
+    failed = []
+    started = []
+    for tunnel_id in tunnel_ids:
+        details = tunnels[tunnel_id]
+        # The connection check below takes a listening port as proof that ssh
+        # connected. That only holds if nothing else had the port before we
+        # started, e.g. an ssh left behind by a killed autossh, or a program
+        # that grabbed the port while the tunnel was stopped.
+        if is_port_in_use(details["local_port"]):
+            console.print(
+                f"[bold red]Error:[/] Local port {details['local_port']} is already in use "
+                f"by another process, so tunnel '{tunnel_id}' can't start. "
+                f"Find it with 'lsof -i :{details['local_port']}'.",
+                highlight=False,
+            )
+            failed.append(tunnel_id)
+            continue
+        pid = _spawn_autossh(tunnel_id, details)
+        if pid is None:
+            console.print(f"[bold red]Failed to start tunnel '{tunnel_id}'.[/bold red]")
+            failed.append(tunnel_id)
+            continue
+        details["pid"] = pid
+        details["pid_file"] = str(pid_file_path(tunnel_id))
+        details.pop("stopped", None)
+        started.append(tunnel_id)
+    save_tunnels(tunnels)
+
+    if not wait:
+        for tunnel_id in started:
+            console.print(
+                f"[green]Tunnel '{tunnel_id}' started with PID {tunnels[tunnel_id]['pid']}.[/green]"
+            )
+        return failed
+
+    # Wait for all tunnels at once, so a slow host doesn't hold up the rest.
+    pending = set(started)
+    errors: dict[str, str] = {}
+
+    def check() -> bool:
+        for tunnel_id in list(pending):
+            details = tunnels[tunnel_id]
+            if is_port_in_use(details["local_port"]):
+                pending.discard(tunnel_id)
+            elif not is_process_running(details["pid"]):
+                errors[tunnel_id] = "autossh exited"
+                pending.discard(tunnel_id)
+            elif error := _last_ssh_error(tunnel_id):
+                errors[tunnel_id] = error
+                pending.discard(tunnel_id)
+        return not pending
+
+    with console.status("Waiting for tunnels to connect..."):
+        _wait_until(check, CONNECT_TIMEOUT, interval=0.2)
+    for tunnel_id in pending:
+        errors[tunnel_id] = f"still not connected after {CONNECT_TIMEOUT} seconds"
+
+    for tunnel_id in started:
+        if tunnel_id in errors:
+            failed.append(tunnel_id)
+            console.print(
+                f"[bold red]Error:[/] Tunnel '{tunnel_id}' is not connected: "
+                f"{errors[tunnel_id]}",
+                highlight=False,
+            )
+            console.print(
+                f"autossh keeps retrying in the background. See "
+                f"'lpf logs {tunnel_id}' for details, or remove it with "
+                f"'lpf rm {tunnel_id}'.",
+                highlight=False,
+            )
+        else:
+            console.print(
+                f"[green]Tunnel '{tunnel_id}' connected (PID {tunnels[tunnel_id]['pid']}).[/green]"
+            )
+    return failed
+
+
+def _stop_process(tunnel_id: str, details: dict):
+    """Stop a tunnel's autossh process, wait for its port to free up, and clear its PID."""
+    pid = details.get("pid")
+    if pid and is_process_running(pid, details):
+        console.print(f"Stopping tunnel '{tunnel_id}' (PID: {pid})...")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            console.print(f"[bold red]Error:[/] Failed to stop process {pid}: {e}")
+        else:
+            # autossh passes SIGTERM on to ssh. Wait for both to let go of the
+            # port, so starting the tunnel again right away can bind it.
+            _wait_until(
+                lambda: not is_process_running(pid)
+                and not is_port_in_use(details["local_port"]),
+                STOP_TIMEOUT,
+            )
+
+    pid_file = details.get("pid_file")
+    if pid_file:
+        try:
+            os.remove(pid_file)
+        except FileNotFoundError:
+            pass  # It's already gone, which is fine
+        except OSError as e:
+            console.print(
+                f"[bold red]Warning:[/] Could not remove PID file {pid_file}: {e}"
+            )
+    details.pop("pid", None)
+    details.pop("pid_file", None)
+
+
+def _require_tunnel(tunnels: dict, tunnel_id: str) -> dict:
+    if tunnel_id not in tunnels:
+        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
+        sys.exit(1)
+    return tunnels[tunnel_id]
+
+
+def _claim_local_port(tunnels: dict, local_port: int, force: bool) -> bool:
+    """Check that a local port is free for a new tunnel, removing lpf's own tunnel on it with `force`."""
     # Check lpf's own registered tunnels first: a stopped/inactive tunnel
     # still "owns" its local_port even though nothing is bound to it at the
     # OS level, so is_port_in_use() alone would miss the conflict.
@@ -109,14 +284,16 @@ def add_tunnel(
                 f"tunnel '{existing_tunnel_id}'. Use --force to replace it, or run "
                 f"'lpf rm {existing_tunnel_id}' first."
             )
-            sys.exit(1)
+            return False
         console.print(
             f"[yellow]Port {local_port} is already assigned to tunnel "
             f"'{existing_tunnel_id}'. Forcing removal.[/yellow]"
         )
-        remove_tunnel(existing_tunnel_id)
-        # Reload tunnels state after removal
-        tunnels = load_tunnels()
+        _stop_process(existing_tunnel_id, tunnels[existing_tunnel_id])
+        del tunnels[existing_tunnel_id]
+        log_file_path(existing_tunnel_id).unlink(missing_ok=True)
+        save_tunnels(tunnels)
+        console.print(f"[green]Tunnel '{existing_tunnel_id}' removed successfully.[/green]")
     elif is_port_in_use(local_port):
         # No lpf tunnel claims this port, so it's held by an external
         # process -- force can't help here, there's nothing of ours to remove.
@@ -128,41 +305,60 @@ def add_tunnel(
             console.print(
                 f"[bold red]Error:[/] Local port {local_port} is already in use. Use --force to override."
             )
-        sys.exit(1)
+        return False
+    return True
 
-    tunnel_id = f"{ssh_host}:{local_port}"
 
-    if tunnel_id in tunnels:
-        console.print(f"[bold red]Error:[/] A tunnel for {tunnel_id} already exists.")
-        sys.exit(1)
-
-    # Create the tunnel configuration
-    tunnels[tunnel_id] = {
-        "local_port": local_port,
-        "remote_port": remote_port,
-        "ssh_host": ssh_host,
-        # Resolved on the SSH server, not here: "localhost" means the server
-        # itself, anything else is a host the server can reach (a container IP,
-        # another machine on its network).
-        "remote_host": remote_host,
-    }
-
-    # Start the tunnel process
-    pid = _start_tunnel_process(tunnel_id, tunnels[tunnel_id])
-
-    if pid:
-        tunnels[tunnel_id]["pid"] = pid
-        tunnels[tunnel_id]["pid_file"] = str(
-            PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
-        )
-        save_tunnels(tunnels)
+def add_tunnel(
+    ssh_host: str,
+    local_ports: list[int],
+    remote_port: int | None,
+    force: bool = False,
+    remote_host: str = "localhost",
+):
+    """Handler for the 'add' command. Adds one tunnel per local port."""
+    local_ports = list(dict.fromkeys(local_ports))  # drop repeats, keep order
+    if remote_port is not None and len(local_ports) > 1:
         console.print(
-            f"[green]Tunnel '{tunnel_id}' started successfully with PID {pid}.[/green]"
+            "[bold red]Error:[/] --remote-port only works with a single local port. "
+            "Add tunnels with different remote ports one at a time."
         )
-    else:
-        # Clean up the failed tunnel entry
-        del tunnels[tunnel_id]
+        sys.exit(1)
+
+    if shutil.which("autossh") is None:
+        console.print(AUTOSSH_MISSING)
+        sys.exit(1)
+
+    tunnels = load_tunnels()
+    failed = []
+    new_ids = []
+    for local_port in local_ports:
+        if not _claim_local_port(tunnels, local_port, force):
+            failed.append(local_port)
+            continue
+        tunnel_id = f"{ssh_host}:{local_port}"
+        tunnels[tunnel_id] = {
+            "local_port": local_port,
+            # If remote_port isn't specified, it defaults to local_port
+            "remote_port": remote_port or local_port,
+            "ssh_host": ssh_host,
+            # Resolved on the SSH server, not here: "localhost" means the server
+            # itself, anything else is a host the server can reach (a container IP,
+            # another machine on its network).
+            "remote_host": remote_host,
+        }
+        new_ids.append(tunnel_id)
+
+    failed_ids = _start_tunnels(tunnels, new_ids)
+    # A tunnel whose autossh never started isn't worth keeping. One that
+    # started but hasn't connected stays, since autossh keeps retrying.
+    unstarted = [tid for tid in failed_ids if "pid" not in tunnels[tid]]
+    if unstarted:
+        for tunnel_id in unstarted:
+            del tunnels[tunnel_id]
         save_tunnels(tunnels)
+
+    if failed or failed_ids:
         sys.exit(1)
 
 
@@ -187,51 +383,35 @@ def list_tunnels():
     table.add_column("FORWARDING", style="yellow", min_width=30)
 
     for tunnel_id, details in sorted(tunnels.items()):
-        if details.get("stopped"):
-            status = "[yellow]STOPPED[/yellow]"
-        elif is_process_running(details.get("pid"), details):
-            status = "[green]ACTIVE[/green]"
-        else:
-            status = "[red]INACTIVE[/red]"
-        remote_host = details.get("remote_host") or "localhost"
-        forwarding_str = (
-            f"localhost:{details['local_port']} -> "
-            f"{remote_host}:{details['remote_port']}"
-        )
-        table.add_row(tunnel_id, status, forwarding_str)
+        table.add_row(tunnel_id, _status(details), _forwarding(details))
 
     console.print(table)
+
+
+def _status(details: dict) -> str:
+    if details.get("stopped"):
+        return "[yellow]STOPPED[/yellow]"
+    if not is_process_running(details.get("pid"), details):
+        return "[red]INACTIVE[/red]"
+    # autossh being alive doesn't mean ssh is connected: it may be retrying a
+    # host that's down. ssh only binds the local port once the forward is up.
+    if is_port_in_use(details["local_port"]):
+        return "[green]ACTIVE[/green]"
+    return "[blue]CONNECTING[/blue]"
+
+
+def _forwarding(details: dict) -> str:
+    remote_host = details.get("remote_host") or "localhost"
+    return f"localhost:{details['local_port']} -> {remote_host}:{details['remote_port']}"
 
 
 def remove_tunnel(tunnel_id: str):
     """Handler for the 'rm' command."""
     tunnels = load_tunnels()
+    details = _require_tunnel(tunnels, tunnel_id)
 
-    if tunnel_id not in tunnels:
-        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
-        sys.exit(1)
-
-    details = tunnels[tunnel_id]
-    pid = details.get("pid")
-
-    if pid and is_process_running(pid, details):
-        console.print(f"Stopping tunnel '{tunnel_id}' (PID: {pid})...")
-        try:
-            os.kill(pid, 15)  # Send SIGTERM
-        except OSError as e:
-            console.print(f"[bold red]Error:[/] Failed to stop process {pid}: {e}")
-
-    # Clean up PID file
-    pid_file_path = details.get("pid_file")
-    if pid_file_path:
-        try:
-            os.remove(pid_file_path)
-        except FileNotFoundError:
-            pass  # It's already gone, which is fine
-        except OSError as e:
-            console.print(
-                f"[bold red]Warning:[/] Could not remove PID file {pid_file_path}: {e}"
-            )
+    _stop_process(tunnel_id, details)
+    log_file_path(tunnel_id).unlink(missing_ok=True)
 
     # Remove from state and save
     del tunnels[tunnel_id]
@@ -257,35 +437,14 @@ def remove_all_tunnels():
 def stop_tunnel(tunnel_id: str):
     """Handler for the 'stop' command - temporarily stops a tunnel without removing it."""
     tunnels = load_tunnels()
-
-    if tunnel_id not in tunnels:
-        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
-        sys.exit(1)
-
-    details = tunnels[tunnel_id]
+    details = _require_tunnel(tunnels, tunnel_id)
 
     if details.get("stopped"):
         console.print(f"[yellow]Tunnel '{tunnel_id}' is already stopped.[/yellow]")
         return
 
-    pid = details.get("pid")
-    if pid and is_process_running(pid, details):
-        console.print(f"Stopping tunnel '{tunnel_id}' (PID: {pid})...")
-        try:
-            os.kill(pid, 15)  # SIGTERM
-        except OSError as e:
-            console.print(f"[bold red]Error:[/] Failed to stop process {pid}: {e}")
-
-    pid_file_path = details.get("pid_file")
-    if pid_file_path:
-        try:
-            os.remove(pid_file_path)
-        except (FileNotFoundError, OSError):
-            pass
-
-    tunnels[tunnel_id].pop("pid", None)
-    tunnels[tunnel_id].pop("pid_file", None)
-    tunnels[tunnel_id]["stopped"] = True
+    _stop_process(tunnel_id, details)
+    details["stopped"] = True
     save_tunnels(tunnels)
     console.print(
         f"[green]Tunnel '{tunnel_id}' stopped. Use 'lpf start {tunnel_id}' to resume.[/green]"
@@ -304,98 +463,78 @@ def stop_all_tunnels():
         stop_tunnel(tunnel_id)
 
 
-def start_tunnel(tunnel_id: str):
+def start_tunnel(tunnel_id: str, wait: bool = True):
     """Handler for the 'start' command - starts a stopped or inactive tunnel."""
     tunnels = load_tunnels()
-
-    if tunnel_id not in tunnels:
-        console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
-        sys.exit(1)
-
-    details = tunnels[tunnel_id]
+    details = _require_tunnel(tunnels, tunnel_id)
 
     if not details.get("stopped") and is_process_running(details.get("pid"), details):
         console.print(f"[yellow]Tunnel '{tunnel_id}' is already running.[/yellow]")
         return
 
-    pid = _start_tunnel_process(tunnel_id, details)
-    if pid:
-        tunnels[tunnel_id]["pid"] = pid
-        tunnels[tunnel_id]["pid_file"] = str(
-            PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
-        )
-        tunnels[tunnel_id].pop("stopped", None)
-        save_tunnels(tunnels)
-        console.print(
-            f"[green]Tunnel '{tunnel_id}' started with PID {pid}.[/green]"
-        )
-    else:
+    if _start_tunnels(tunnels, [tunnel_id], wait):
         sys.exit(1)
 
 
-def start_all_tunnels():
+def start_all_tunnels(wait: bool = True):
     """Handler for 'start --all'."""
     tunnels = load_tunnels()
     if not tunnels:
         console.print("No tunnels configured.")
         return
 
-    console.print(f"Starting all {len(tunnels)} tunnels...")
-    for tunnel_id in list(tunnels.keys()):
-        start_tunnel(tunnel_id)
+    to_start = []
+    for tunnel_id, details in tunnels.items():
+        if not details.get("stopped") and is_process_running(details.get("pid"), details):
+            console.print(f"[yellow]Tunnel '{tunnel_id}' is already running.[/yellow]")
+        else:
+            to_start.append(tunnel_id)
+
+    if to_start:
+        console.print(f"Starting {len(to_start)} tunnel(s)...")
+    # One failing tunnel doesn't stop the others from starting.
+    failed = _start_tunnels(tunnels, to_start, wait)
+    if failed:
+        console.print(
+            f"[bold red]{len(failed)} of {len(to_start)} tunnel(s) failed to start.[/bold red]"
+        )
+        sys.exit(1)
 
 
-def restart_tunnels(force: bool = False):
+def restart_tunnels(force: bool = False, wait: bool = True):
     """Finds all inactive tunnels and restarts them. With --force, restarts all (including stopped)."""
     sync_tunnels(silent=True)
     tunnels = load_tunnels()
-    restarted_count = 0
 
     if force:
         console.print("Forcing restart of all tunnels...")
     else:
         console.print("Checking for inactive tunnels to restart...")
 
-    for tunnel_id, details in list(tunnels.items()):
+    to_start = []
+    for tunnel_id, details in tunnels.items():
         # Skip intentionally stopped tunnels unless forcing
         if details.get("stopped") and not force:
             continue
 
         is_running = is_process_running(details.get("pid"), details)
-
         if force and is_running:
-            console.print(f"Stopping active tunnel: [cyan]{tunnel_id}[/cyan]")
-            # Stop the process without removing the config
-            pid = details.get("pid")
-            try:
-                os.kill(pid, 15)  # Send SIGTERM
-                time.sleep(0.5)  # Give it a moment to die
-            except OSError:
-                pass  # Already dead, probably
-
-        # Start if it was forced or if it was inactive
+            _stop_process(tunnel_id, details)
         if force or not is_running:
-            console.print(f"Starting tunnel: [cyan]{tunnel_id}[/cyan]")
-            pid = _start_tunnel_process(tunnel_id, details)
-            if pid:
-                tunnels[tunnel_id]["pid"] = pid
-                tunnels[tunnel_id]["pid_file"] = str(
-                    PID_DIR / f"{sanitize_filename(tunnel_id)}.pid"
-                )
-                tunnels[tunnel_id].pop("stopped", None)
-                restarted_count += 1
-            else:
-                console.print(
-                    f"[bold red]Failed to restart tunnel '{tunnel_id}'.[/bold red]"
-                )
+            to_start.append(tunnel_id)
 
-    if restarted_count > 0:
-        save_tunnels(tunnels)
-        console.print(
-            f"[green]Finished. Restarted {restarted_count} tunnel(s).[/green]"
-        )
-    else:
+    if not to_start:
         console.print("[green]No tunnels needed restarting.[/green]")
+        return
+
+    failed = _start_tunnels(tunnels, to_start, wait)
+    restarted_count = len(to_start) - len(failed)
+    console.print(f"[green]Finished. Restarted {restarted_count} tunnel(s).[/green]")
+    if failed:
+        console.print(
+            f"[bold red]{len(failed)} tunnel(s) failed to restart.[/bold red]"
+        )
+        sys.exit(1)
 
 
 def sync_tunnels(silent: bool = False):
@@ -408,8 +547,7 @@ def sync_tunnels(silent: bool = False):
 
     stale_count = 0
     with console.status("[bold green]Syncing tunnel states...[/]"):
-        tunnels_to_check = list(tunnels.items())
-        for tunnel_id, details in tunnels_to_check:
+        for tunnel_id, details in tunnels.items():
             if details.get("stopped"):
                 continue
             pid = details.get("pid")
@@ -419,9 +557,8 @@ def sync_tunnels(silent: bool = False):
                         f"[yellow]Stale PID found for tunnel '{tunnel_id}'. Cleaning up.[/yellow]"
                     )
                 # Remove stale PID info from the original dict
-                del tunnels[tunnel_id]["pid"]
-                if "pid_file" in tunnels[tunnel_id]:
-                    del tunnels[tunnel_id]["pid_file"]
+                details.pop("pid", None)
+                details.pop("pid_file", None)
                 stale_count += 1
 
     if stale_count > 0:
@@ -433,3 +570,49 @@ def sync_tunnels(silent: bool = False):
     else:
         if not silent:
             console.print("[green]All tunnels are in sync.[/green]")
+
+
+def show_logs(tunnel_id: str, lines: int = 50, follow: bool = False):
+    """Handler for the 'logs' command: print the end of a tunnel's autossh/ssh log."""
+    tunnels = load_tunnels()
+    _require_tunnel(tunnels, tunnel_id)
+
+    log_file = log_file_path(tunnel_id)
+    if not log_file.exists():
+        console.print(
+            f"No logs for '{tunnel_id}' yet. Logs are written from the next time "
+            f"the tunnel starts ('lpf start {tunnel_id}' or 'lpf restart --force')."
+        )
+        return
+
+    f = open(log_file, "r", errors="replace")
+    try:
+        tail = f.read().splitlines()[-lines:] if lines > 0 else []
+        for line in tail:
+            console.print(line, markup=False, highlight=False, soft_wrap=True)
+        if not follow:
+            return
+
+        while True:
+            chunk = f.read()
+            if chunk:
+                console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+                continue
+            # Each start replaces the log with a new file. Once that happens,
+            # switch to the new file and print it from the top.
+            try:
+                current = log_file.stat()
+            except FileNotFoundError:
+                current = None  # removed, or about to be recreated
+            if current and (
+                current.st_ino != os.fstat(f.fileno()).st_ino
+                or current.st_size < f.tell()
+            ):
+                f.close()
+                f = open(log_file, "r", errors="replace")
+                continue
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        f.close()

@@ -23,3 +23,8 @@ fallback-version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lpf"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
