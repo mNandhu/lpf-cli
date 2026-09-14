@@ -76,6 +76,15 @@ To check which version you have:
 lpf --version
 ```
 
+### Update notifications
+
+Once a day, `lpf` checks the repo's git tags on GitHub for a newer version and, if there is one, prints
+a one-line notice after the command's output. The check runs in a separate
+background process, so commands never wait on the network, and a failed check
+is ignored. It is skipped when output isn't going to a terminal.
+
+To turn it off, set `LPF_NO_UPDATE_CHECK=1` in your environment.
+
 ### From a local clone (development)
 
 ```bash

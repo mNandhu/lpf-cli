@@ -3,6 +3,7 @@ from importlib.metadata import version
 
 import typer
 from . import commands
+from .update_check import maybe_notify
 from .utils import ensure_config_dirs, console, load_tunnels
 
 
@@ -47,7 +48,7 @@ app = typer.Typer(
 
 def _version_callback(value: bool):
     if value:
-        console.print(f"lpf {version('lpf-cli')}")
+        console.print(f"lpf {version('lpf-cli')}", highlight=False)
         raise typer.Exit()
 
 
@@ -209,7 +210,10 @@ def sync_tunnels_command():
 def main():
     """Main entry point for the lpf-cli command."""
     ensure_config_dirs()
-    app()
+    try:
+        app()
+    finally:
+        maybe_notify()
 
 
 if __name__ == "__main__":
