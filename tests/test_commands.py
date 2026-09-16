@@ -103,6 +103,15 @@ def test_add_refuses_port_owned_by_another_tunnel(fake):
     assert set(load_tunnels()) == {"old:8000"}
 
 
+def test_add_refuses_duplicate_of_same_tunnel(fake):
+    add_saved_tunnel("myserver:8000", 8000, stopped=True)
+    result = lpf("add", "myserver", "8000")
+    assert result.exit_code == 1
+    assert "Tunnel 'myserver:8000' already exists" in result.output
+    assert "already assigned to tunnel" not in result.output
+    assert set(load_tunnels()) == {"myserver:8000"}
+
+
 def test_add_force_replaces_running_tunnel(fake):
     lpf("add", "old", "8000")
     old_pid = load_tunnels()["old:8000"]["pid"]

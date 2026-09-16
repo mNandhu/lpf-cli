@@ -267,7 +267,7 @@ def _require_tunnel(tunnels: dict, tunnel_id: str) -> dict:
     return tunnels[tunnel_id]
 
 
-def _claim_local_port(tunnels: dict, local_port: int, force: bool) -> bool:
+def _claim_local_port(tunnels: dict, local_port: int, force: bool, tunnel_id: str) -> bool:
     """Check that a local port is free for a new tunnel, removing lpf's own tunnel on it with `force`."""
     # Check lpf's own registered tunnels first: a stopped/inactive tunnel
     # still "owns" its local_port even though nothing is bound to it at the
@@ -279,11 +279,19 @@ def _claim_local_port(tunnels: dict, local_port: int, force: bool) -> bool:
 
     if existing_tunnel_id:
         if not force:
-            console.print(
-                f"[bold red]Error:[/] Local port {local_port} is already assigned to "
-                f"tunnel '{existing_tunnel_id}'. Use --force to replace it, or run "
-                f"'lpf rm {existing_tunnel_id}' first."
-            )
+            if existing_tunnel_id == tunnel_id:
+                # Same ssh_host and local_port as an existing tunnel: this is a
+                # re-add of itself, not a conflict with something else.
+                console.print(
+                    f"[bold red]Error:[/] Tunnel '{tunnel_id}' already exists. "
+                    f"Use --force to restart it, or run 'lpf rm {tunnel_id}' first."
+                )
+            else:
+                console.print(
+                    f"[bold red]Error:[/] Local port {local_port} is already assigned to "
+                    f"tunnel '{existing_tunnel_id}'. Use --force to replace it, or run "
+                    f"'lpf rm {existing_tunnel_id}' first."
+                )
             return False
         console.print(
             f"[yellow]Port {local_port} is already assigned to tunnel "
@@ -333,10 +341,10 @@ def add_tunnel(
     failed = []
     new_ids = []
     for local_port in local_ports:
-        if not _claim_local_port(tunnels, local_port, force):
+        tunnel_id = f"{ssh_host}:{local_port}"
+        if not _claim_local_port(tunnels, local_port, force, tunnel_id):
             failed.append(local_port)
             continue
-        tunnel_id = f"{ssh_host}:{local_port}"
         tunnels[tunnel_id] = {
             "local_port": local_port,
             # If remote_port isn't specified, it defaults to local_port
