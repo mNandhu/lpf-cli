@@ -28,6 +28,20 @@ def test_complete_ssh_host(monkeypatch):
     assert main._complete_ssh_host("my") == ["myserver", "mybox"]
 
 
+def test_complete_tunnel_id_includes_names(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "load_tunnels",
+        lambda: {
+            "myserver:8000": {"name": "grafana"},
+            "myserver:8001": {},
+            "other:9000": {"name": "mything"},
+        },
+    )
+    assert main._complete_tunnel_id("my") == ["myserver:8000", "myserver:8001", "mything"]
+    assert main._complete_tunnel_id("gra") == ["grafana"]
+
+
 @pytest.mark.parametrize(
     "older, newer",
     [

@@ -115,13 +115,16 @@ pip install git+https://github.com/mNandhu/lpf-cli.git
 ### Add a tunnel
 
 ```bash
-lpf add <SSH_HOST> <LOCAL_PORT>... [-r <REMOTE_PORT>] [-H <REMOTE_HOST>] [--force]
+lpf add <SSH_HOST> <LOCAL_PORT>... [-r <REMOTE_PORT>] [-H <REMOTE_HOST>] [-n <NAME>] [--force]
 ```
 
 - `<SSH_HOST>`: SSH host, such as `user@hostname` or an alias from `~/.ssh/config`
 - `<LOCAL_PORT>...`: one or more local ports to forward from. Each port becomes its own tunnel.
 - `-r, --remote-port`: remote port (defaults to the local port). Only works with a single local port.
 - `-H, --remote-host`: host the SSH server forwards to (defaults to `localhost`, meaning the server itself)
+- `-n, --name`: a memorable name for the tunnel (letters, digits, `.`, `_`, `-`), so you
+  can refer to it as `<NAME>` instead of `SSH_HOST:PORT` in `stop`, `start`, `rm`, and
+  `logs`. Only works with a single local port, and must be unique.
 - `-f, --force`: remove any existing tunnel on the same local port first
 
 Examples:
@@ -129,6 +132,8 @@ Examples:
 ```bash
 lpf add user@server.com 8080 -r 80
 lpf add myserver 8000 8001 8002
+lpf add host1 3000 --name host1_grafana
+lpf start host1_grafana
 ```
 
 After starting a tunnel, `add` waits up to 15 seconds for its local port to
@@ -163,8 +168,8 @@ lpf add user@server.com 3000 -r 3000 -H 172.24.0.2
 lpf ls
 ```
 
-This shows every configured tunnel with its status and port mapping. The
-status is one of:
+This shows every configured tunnel with its status, port mapping, and the
+`--name` you gave it, if any. The status is one of:
 
 - `ACTIVE`: `autossh` is running and the local port is listening, which
   means ssh connected and set up the forward.
@@ -177,8 +182,8 @@ status is one of:
 ### Stop, start, and remove tunnels
 
 `stop`, `start`, and `rm` take a tunnel ID. You can pass it as one
-`SSH_HOST:PORT` argument or as two arguments, `SSH_HOST PORT`, the same way
-`add` takes them:
+`SSH_HOST:PORT` argument, as two arguments, `SSH_HOST PORT`, the same way
+`add` takes them, or as the `--name` you gave it at `add` time:
 
 ```bash
 lpf stop user@server.com:8080
@@ -236,6 +241,7 @@ Each tunnel keeps a log of `autossh` and `ssh` output from its latest start.
 ```bash
 lpf logs <TUNNEL_ID> [-n <LINES>] [--follow]
 lpf logs myserver 8765 -f
+lpf logs host1_grafana -f
 ```
 
 - `-n, --lines`: how many lines to show from the end (default 50)
@@ -283,8 +289,8 @@ Then restart your shell or `source` its rc file. After that, TAB completes
 commands and options. `lpf add <TAB>` lists the hosts in your
 `~/.ssh/config` (including files it `Include`s), and `lpf rm <TAB>`,
 `lpf stop <TAB>`, `lpf start <TAB>`, and `lpf logs <TAB>` list your tunnel
-IDs. If you type an `SSH_HOST` first, TAB on the second argument suggests that
-host's ports.
+IDs and any names you gave them with `--name`. If you type an `SSH_HOST`
+first, TAB on the second argument suggests that host's ports.
 
 If you'd rather not install it, `lpf --show-completion` prints the completion
 script so you can read it or source it yourself.

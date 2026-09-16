@@ -209,6 +209,85 @@ def test_ls_statuses(fake):
     }
 
 
+def test_add_with_name_persists_it(fake):
+    result = lpf("add", "host1", "3000", "--name", "host1_grafana")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels()["host1:3000"]["name"] == "host1_grafana"
+
+
+def test_add_name_with_multiple_ports_is_an_error(fake):
+    result = lpf("add", "myserver", "8000", "8001", "--name", "mine")
+    assert result.exit_code == 1
+    assert "--name only works with a single local port" in result.output
+    assert fake.spawned == []
+
+
+def test_add_rejects_invalid_name(fake):
+    result = lpf("add", "myserver", "8000", "--name", "bad name!")
+    assert result.exit_code == 1
+    assert "may only contain letters, digits" in result.output
+    assert fake.spawned == []
+
+
+def test_add_rejects_trailing_newline_in_name(fake):
+    result = lpf("add", "myserver", "8000", "--name", "grafana\n")
+    assert result.exit_code == 1
+    assert "may only contain letters, digits" in result.output
+    assert fake.spawned == []
+
+
+def test_add_rejects_duplicate_name(fake):
+    lpf("add", "host1", "3000", "--name", "grafana")
+    result = lpf("add", "host2", "4000", "--name", "grafana")
+    assert result.exit_code == 1
+    assert "Name 'grafana' is already used by tunnel 'host1:3000'" in result.output
+    assert fake.spawned == ["host1:3000"]
+
+
+def test_start_stop_rm_logs_resolve_by_name(fake):
+    lpf("add", "host1", "3000", "--name", "grafana")
+
+    result = lpf("stop", "grafana")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels()["host1:3000"]["stopped"]
+
+    result = lpf("start", "grafana")
+    assert result.exit_code == 0, result.output
+    assert "pid" in load_tunnels()["host1:3000"]
+
+    result = lpf("logs", "grafana")
+    assert result.exit_code == 0, result.output
+
+    result = lpf("rm", "grafana")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels() == {}
+
+
+def test_ls_shows_name(fake, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "120")
+    lpf("add", "host1", "3000", "--name", "host1_grafana_anything_xyz")
+    output = lpf("ls").output
+    assert "host1_grafana_anything_xyz" in output
+    # STATUS must never be squeezed to make room for a long NAME.
+    rows = {line.split()[0]: line.split()[1] for line in output.splitlines()[1:] if line.strip()}
+    assert rows["host1:3000"] == "ACTIVE"
+
+
+def test_add_force_replacing_named_tunnel_reuses_its_name(fake):
+    lpf("add", "host1", "3000", "--name", "grafana")
+    result = lpf("add", "host2", "3000", "--name", "grafana", "--force")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels()["host2:3000"]["name"] == "grafana"
+    assert set(load_tunnels()) == {"host2:3000"}
+
+
+def test_add_force_self_readd_keeps_name(fake):
+    lpf("add", "host1", "3000", "--name", "grafana")
+    result = lpf("add", "host1", "3000", "--force")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels()["host1:3000"]["name"] == "grafana"
+
+
 def test_restart_force_stops_then_starts(fake):
     lpf("add", "myserver", "8000")
     old_pid = load_tunnels()["myserver:8000"]["pid"]

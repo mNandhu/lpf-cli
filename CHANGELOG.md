@@ -6,6 +6,12 @@ All notable changes to `lpf` are listed here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `lpf add --name/-n <NAME>` names a tunnel so it can be referred to as
+  `<NAME>` in `stop`, `start`, `rm`, and `logs` instead of `SSH_HOST:PORT`.
+  Shell completion and `lpf ls`'s new NAME column both cover it.
+
 ## [0.3.0] - 2026-09-14
 
 ### Added

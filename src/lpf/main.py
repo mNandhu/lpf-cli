@@ -8,7 +8,15 @@ from .utils import ensure_config_dirs, console, load_tunnels, ssh_config_hosts
 
 
 def _complete_tunnel_id(incomplete: str):
-    return [tid for tid in load_tunnels() if tid.startswith(incomplete)]
+    """Complete a tunnel ID or name, e.g. 'myserver:8000' or 'host1_grafana'."""
+    matches = []
+    for tunnel_id, details in load_tunnels().items():
+        if tunnel_id.startswith(incomplete):
+            matches.append(tunnel_id)
+        name = details.get("name")
+        if name and name.startswith(incomplete) and name not in matches:
+            matches.append(name)
+    return matches
 
 
 def _complete_port(ctx: typer.Context, incomplete: str):
@@ -110,9 +118,17 @@ def add_tunnel_command(
         "Use this to reach something the server can see but does not listen on, "
         "e.g. a container IP.",
     ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="A memorable name for the tunnel (letters, digits, '.', '_', '-'), so you "
+        "can 'lpf start <name>' instead of the full tunnel ID. Only works with a "
+        "single local port.",
+    ),
 ):
     """Add and start new tunnels, one per local port."""
-    commands.add_tunnel(ssh_host, local_ports, remote_port, force, remote_host)
+    commands.add_tunnel(ssh_host, local_ports, remote_port, force, remote_host, name)
 
 
 @app.command("ls", help="List all configured tunnels and their status")
@@ -125,7 +141,8 @@ def list_tunnels_command():
 def remove_tunnel_command(
     tunnel_id: str | None = typer.Argument(
         None,
-        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
+        help="The SSH host, full tunnel ID, or --name given at 'lpf add' "
+        "(e.g., user@hostname, user@hostname:port, or host1_grafana)",
         autocompletion=_complete_tunnel_id,
     ),
     port: int | None = typer.Argument(
@@ -154,7 +171,8 @@ def remove_tunnel_command(
 def stop_tunnel_command(
     tunnel_id: str | None = typer.Argument(
         None,
-        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
+        help="The SSH host, full tunnel ID, or --name given at 'lpf add' "
+        "(e.g., user@hostname, user@hostname:port, or host1_grafana)",
         autocompletion=_complete_tunnel_id,
     ),
     port: int | None = typer.Argument(
@@ -183,7 +201,8 @@ def stop_tunnel_command(
 def start_tunnel_command(
     tunnel_id: str | None = typer.Argument(
         None,
-        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
+        help="The SSH host, full tunnel ID, or --name given at 'lpf add' "
+        "(e.g., user@hostname, user@hostname:port, or host1_grafana)",
         autocompletion=_complete_tunnel_id,
     ),
     port: int | None = typer.Argument(
@@ -233,7 +252,8 @@ def sync_tunnels_command():
 def logs_command(
     tunnel_id: str = typer.Argument(
         ...,
-        help="The SSH host, or full tunnel ID (e.g., user@hostname or user@hostname:port)",
+        help="The SSH host, full tunnel ID, or --name given at 'lpf add' "
+        "(e.g., user@hostname, user@hostname:port, or host1_grafana)",
         autocompletion=_complete_tunnel_id,
     ),
     port: int | None = typer.Argument(

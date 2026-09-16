@@ -3,6 +3,7 @@ CLI command functions for lpf-cli.
 """
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -27,6 +28,8 @@ CONNECT_TIMEOUT = 15
 STOP_TIMEOUT = 5
 # How long autossh gets to write its PID file after forking.
 PID_FILE_TIMEOUT = 5
+
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 AUTOSSH_MISSING = (
     "[bold red]Error:[/] autossh is not installed (or not on your PATH). "
@@ -260,6 +263,20 @@ def _stop_process(tunnel_id: str, details: dict):
     details.pop("pid_file", None)
 
 
+def _resolve_name(tunnels: dict, identifier: str) -> str:
+    """Resolve a tunnel name to its 'SSH_HOST:PORT' ID; anything else passes through.
+
+    Names can't contain ':' (enforced at `add` time) and every tunnel ID does,
+    so a name can never collide with an ID and no precedence check is needed.
+    """
+    if ":" in identifier:
+        return identifier
+    for tunnel_id, details in tunnels.items():
+        if details.get("name") == identifier:
+            return tunnel_id
+    return identifier
+
+
 def _require_tunnel(tunnels: dict, tunnel_id: str) -> dict:
     if tunnel_id not in tunnels:
         console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}' not found.")
@@ -323,6 +340,7 @@ def add_tunnel(
     remote_port: int | None,
     force: bool = False,
     remote_host: str = "localhost",
+    name: str | None = None,
 ):
     """Handler for the 'add' command. Adds one tunnel per local port."""
     local_ports = list(dict.fromkeys(local_ports))  # drop repeats, keep order
@@ -332,16 +350,47 @@ def add_tunnel(
             "Add tunnels with different remote ports one at a time."
         )
         sys.exit(1)
+    if name is not None and len(local_ports) > 1:
+        console.print(
+            "[bold red]Error:[/] --name only works with a single local port. "
+            "Add tunnels with different names one at a time."
+        )
+        sys.exit(1)
+    if name is not None and not NAME_RE.fullmatch(name):
+        console.print(
+            "[bold red]Error:[/] --name may only contain letters, digits, '.', '_', and '-'."
+        )
+        sys.exit(1)
 
     if shutil.which("autossh") is None:
         console.print(AUTOSSH_MISSING)
         sys.exit(1)
 
     tunnels = load_tunnels()
+    if name is not None:
+        owner = next(
+            (tid for tid, d in tunnels.items() if d.get("name") == name), None
+        )
+        this_id = f"{ssh_host}:{local_ports[0]}"
+        # A tunnel --force is about to replace (same local port) doesn't count
+        # as a conflict: its name is going away along with it.
+        port_owner = next(
+            (tid for tid, d in tunnels.items() if d.get("local_port") == local_ports[0]),
+            None,
+        )
+        if owner is not None and owner != this_id and not (force and owner == port_owner):
+            console.print(
+                f"[bold red]Error:[/] Name '{name}' is already used by tunnel '{owner}'."
+            )
+            sys.exit(1)
+
     failed = []
     new_ids = []
     for local_port in local_ports:
         tunnel_id = f"{ssh_host}:{local_port}"
+        # --force on a tunnel's own ID recreates it (see _claim_local_port), which
+        # would otherwise silently drop a name that --name wasn't passed again for.
+        kept_name = name if name is not None else tunnels.get(tunnel_id, {}).get("name")
         if not _claim_local_port(tunnels, local_port, force, tunnel_id):
             failed.append(local_port)
             continue
@@ -354,6 +403,7 @@ def add_tunnel(
             # itself, anything else is a host the server can reach (a container IP,
             # another machine on its network).
             "remote_host": remote_host,
+            **({"name": kept_name} if kept_name is not None else {}),
         }
         new_ids.append(tunnel_id)
 
@@ -387,11 +437,14 @@ def list_tunnels():
         header_style="bold magenta",
     )
     table.add_column("ID", style="cyan", no_wrap=True, min_width=25)
-    table.add_column("STATUS", justify="center")
-    table.add_column("FORWARDING", style="yellow", min_width=30)
+    table.add_column("STATUS", justify="center", no_wrap=True, min_width=11)
+    table.add_column("FORWARDING", style="yellow", no_wrap=True, min_width=30)
+    table.add_column("NAME", style="magenta", no_wrap=True)
 
     for tunnel_id, details in sorted(tunnels.items()):
-        table.add_row(tunnel_id, _status(details), _forwarding(details))
+        table.add_row(
+            tunnel_id, _status(details), _forwarding(details), details.get("name", "")
+        )
 
     console.print(table)
 
@@ -416,6 +469,7 @@ def _forwarding(details: dict) -> str:
 def remove_tunnel(tunnel_id: str):
     """Handler for the 'rm' command."""
     tunnels = load_tunnels()
+    tunnel_id = _resolve_name(tunnels, tunnel_id)
     details = _require_tunnel(tunnels, tunnel_id)
 
     _stop_process(tunnel_id, details)
@@ -445,6 +499,7 @@ def remove_all_tunnels():
 def stop_tunnel(tunnel_id: str):
     """Handler for the 'stop' command - temporarily stops a tunnel without removing it."""
     tunnels = load_tunnels()
+    tunnel_id = _resolve_name(tunnels, tunnel_id)
     details = _require_tunnel(tunnels, tunnel_id)
 
     if details.get("stopped"):
@@ -474,6 +529,7 @@ def stop_all_tunnels():
 def start_tunnel(tunnel_id: str, wait: bool = True):
     """Handler for the 'start' command - starts a stopped or inactive tunnel."""
     tunnels = load_tunnels()
+    tunnel_id = _resolve_name(tunnels, tunnel_id)
     details = _require_tunnel(tunnels, tunnel_id)
 
     if not details.get("stopped") and is_process_running(details.get("pid"), details):
@@ -583,6 +639,7 @@ def sync_tunnels(silent: bool = False):
 def show_logs(tunnel_id: str, lines: int = 50, follow: bool = False):
     """Handler for the 'logs' command: print the end of a tunnel's autossh/ssh log."""
     tunnels = load_tunnels()
+    tunnel_id = _resolve_name(tunnels, tunnel_id)
     _require_tunnel(tunnels, tunnel_id)
 
     log_file = log_file_path(tunnel_id)
