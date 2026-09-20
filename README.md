@@ -20,6 +20,9 @@ uv tool install git+https://github.com/mNandhu/lpf-cli.git
 # forward localhost:8765 to port 8765 on myserver (any ~/.ssh/config alias works)
 lpf add myserver 8765
 
+# forward to a Docker container running on myserver (no need to look up its IP)
+lpf add myserver 4040 -c my-container
+
 # see what's running
 lpf ls
 
@@ -36,6 +39,10 @@ completion is available once you set it up (see
 
 ## Features
 
+- **Tunnel straight to Docker containers.** `lpf add myserver 4040 -c my-container`
+  finds the container's IP over ssh and forwards to it. The IP is looked up
+  again on every `start`/`restart`, so redeploys are picked up. See
+  [Forward to a Docker container](#forward-to-a-docker-container).
 - Tunnels run as detached `autossh` processes, so they don't need a tty, tmux,
   or an open terminal.
 - `lpf add` waits until the tunnel is actually forwarding. If ssh can't
@@ -163,6 +170,31 @@ network:
 ```bash
 lpf add user@server.com 3000 -r 3000 -H 172.24.0.2
 ```
+
+### Forward to a Docker container
+
+Containers on a remote machine get a new IP whenever they're redeployed.
+`-c/--container` handles that for you: give lpf the container name and it asks
+the SSH host for the IP, so you don't have to run `docker inspect` yourself.
+
+```bash
+lpf add myserver 4040 -c evaluator-api-1
+lpf add myserver 3000 -c grafana --network monitoring_default
+```
+
+- The IP is looked up again on every `lpf start`, `lpf start --all`, and
+  `lpf restart`, so a redeployed container is picked up automatically. A
+  tunnel that's already running keeps its old IP until then, so after
+  redeploying, run `lpf restart --force`.
+- A container on several Docker networks uses its primary network by default.
+  `--network <NAME>` picks a different one.
+- If the lookup fails (the host is briefly unreachable, the container is
+  mid-redeploy), lpf warns and reuses the last known IP. On the first `add`
+  there's no saved IP, so it errors with the reason instead.
+- `lpf ls` shows the container and its current IP, such as
+  `grafana(10.89.0.3):3000`.
+- `--container` can't be combined with `-H`. The SSH user needs permission to
+  run `docker inspect` on the host.
 
 ### List tunnels
 
