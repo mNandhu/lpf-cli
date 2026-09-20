@@ -459,3 +459,36 @@ def test_lookup_failure_falls_back_to_saved_ip(fake, monkeypatch):
     result = lpf("start", "vm:3000")
     assert result.exit_code == 0, result.output
     assert "last known IP 10.0.0.1" in result.output
+
+
+def test_restart_force_keeps_running_tunnel_on_shared_port(fake):
+    add_saved_tunnel("a:8000", 8000, stopped=True)  # first in file order
+    assert lpf("add", "b", "8000").exit_code == 0
+    result = lpf("restart", "--force")
+    assert result.exit_code == 0, result.output
+    assert "Skipping 'a:8000'" in result.output
+    tunnels = load_tunnels()
+    assert tunnels["a:8000"].get("stopped")
+    assert tunnels["b:8000"]["pid"] in fake.running
+
+
+def test_start_all_skips_stopped_tunnel_on_port_of_running_one(fake):
+    assert lpf("add", "b", "8000").exit_code == 0
+    add_saved_tunnel("a:8000", 8000, stopped=True)
+    add_saved_tunnel("c:8001", 8001, stopped=True)
+    result = lpf("start", "--all")
+    assert result.exit_code == 0, result.output
+    assert "Skipping 'a:8000'" in result.output
+    tunnels = load_tunnels()
+    assert tunnels["a:8000"].get("stopped")
+    assert "pid" in tunnels["c:8001"]
+
+
+def test_start_all_starts_one_of_stopped_tunnels_sharing_a_port(fake):
+    add_saved_tunnel("a:8000", 8000, stopped=True)
+    add_saved_tunnel("b:8000", 8000, stopped=True)
+    result = lpf("start", "--all")
+    assert result.exit_code == 0, result.output
+    tunnels = load_tunnels()
+    assert "pid" in tunnels["a:8000"]
+    assert tunnels["b:8000"].get("stopped")

@@ -248,6 +248,34 @@ def _running_tunnel_on_port(tunnels: dict, local_port: int, exclude_id: str) -> 
     return None
 
 
+def _pick_port_winners(tunnels: dict, candidates: list[str]) -> list[str]:
+    """Drop candidates that would share a local port with a tunnel that gets to run.
+
+    Only one tunnel can run per local port, so when starting several at once
+    the rest are skipped with a note (not counted as failures). A tunnel
+    running outside `candidates` keeps its port. Among candidates, one that
+    isn't stopped beats a stopped one, then the first in order wins.
+    """
+    winners: dict[int, str] = {}
+    for tid, d in tunnels.items():
+        if tid not in candidates and not d.get("stopped") and is_process_running(d.get("pid"), d):
+            winners[d["local_port"]] = tid
+    for tid in sorted(candidates, key=lambda t: bool(tunnels[t].get("stopped"))):
+        port = tunnels[tid]["local_port"]
+        winners.setdefault(port, tid)
+    picked = []
+    for tid in candidates:
+        port = tunnels[tid]["local_port"]
+        if winners[port] == tid:
+            picked.append(tid)
+        else:
+            console.print(
+                f"[yellow]Skipping '{tid}': local port {port} is used by '{winners[port]}'.[/yellow]",
+                highlight=False,
+            )
+    return picked
+
+
 def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> list[str]:
     """Start autossh for each tunnel and save their PIDs.
 
@@ -699,6 +727,7 @@ def start_all_tunnels(wait: bool = True):
         else:
             to_start.append(tunnel_id)
 
+    to_start = _pick_port_winners(tunnels, to_start)
     if to_start:
         console.print(f"Starting {len(to_start)} tunnel(s)...")
     # One failing tunnel doesn't stop the others from starting.
@@ -725,12 +754,17 @@ def restart_tunnels(force: bool = False, wait: bool = True):
         # Skip intentionally stopped tunnels unless forcing
         if details.get("stopped") and not force:
             continue
-
-        is_running = is_process_running(details.get("pid"), details)
-        if force and is_running:
-            _stop_process(tunnel_id, details)
-        if force or not is_running:
+        if force or not is_process_running(details.get("pid"), details):
             to_start.append(tunnel_id)
+
+    # Decide who gets a shared port before stopping anything, so a stopped
+    # tunnel can't take the port from one that was running.
+    to_start = _pick_port_winners(tunnels, to_start)
+    if force:
+        for tunnel_id in to_start:
+            details = tunnels[tunnel_id]
+            if is_process_running(details.get("pid"), details):
+                _stop_process(tunnel_id, details)
 
     if not to_start:
         console.print("[green]No tunnels needed restarting.[/green]")

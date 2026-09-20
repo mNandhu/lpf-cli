@@ -12,6 +12,9 @@ All notable changes to `lpf` are listed here. The format is based on
   uses it. Several tunnels can share a port as long as only one runs at a
   time: `lpf start` (and `restart`) refuses to start a tunnel while another
   tunnel is running on the same local port.
+  `start --all` and `restart` skip (with a note, not an error) tunnels whose
+  port is taken by another, and `restart --force` keeps a running tunnel's
+  port instead of handing it to a stopped one.
 
 ## [0.4.0] - 2026-09-20
 
