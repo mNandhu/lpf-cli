@@ -6,11 +6,22 @@ All notable changes to `lpf` are listed here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
 ### Added
 
 - `lpf add --name/-n <NAME>` names a tunnel so it can be referred to as
   `<NAME>` in `stop`, `start`, `rm`, and `logs` instead of `SSH_HOST:PORT`.
   Shell completion and `lpf ls`'s new NAME column both cover it.
+- `lpf add HOST PORT --container/-c <NAME>` forwards to a Docker container on
+  the remote host. The container's IP is looked up over ssh on every
+  start/restart, so redeployed containers are picked up. `--network` picks
+  which network when a container has several.
+
+### Fixed
+
+- Re-adding the same `SSH_HOST:PORT` now says the tunnel already exists
+  instead of blaming a different conflicting tunnel.
 
 ## [0.3.0] - 2026-09-14
 
@@ -82,7 +93,8 @@ First tagged release.
 
 - `add` missed conflicts with stopped tunnels on the same local port.
 
-[Unreleased]: https://github.com/mNandhu/lpf-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mNandhu/lpf-cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mNandhu/lpf-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mNandhu/lpf-cli/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mNandhu/lpf-cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mNandhu/lpf-cli/releases/tag/v0.2.0
