@@ -235,6 +235,19 @@ def _refresh_container_hosts(tunnels: dict, tunnel_ids: list[str]) -> list[str]:
     return failed
 
 
+def _running_tunnel_on_port(tunnels: dict, local_port: int, exclude_id: str) -> str | None:
+    """ID of another running tunnel on this local port, if any."""
+    for tid, d in tunnels.items():
+        if (
+            tid != exclude_id
+            and d.get("local_port") == local_port
+            and not d.get("stopped")
+            and is_process_running(d.get("pid"), d)
+        ):
+            return tid
+    return None
+
+
 def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> list[str]:
     """Start autossh for each tunnel and save their PIDs.
 
@@ -260,6 +273,16 @@ def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> l
         # connected. That only holds if nothing else had the port before we
         # started, e.g. an ssh left behind by a killed autossh, or a program
         # that grabbed the port while the tunnel was stopped.
+        holder = _running_tunnel_on_port(tunnels, details["local_port"], tunnel_id)
+        if holder is not None:
+            console.print(
+                f"[bold red]Error:[/] Local port {details['local_port']} is already used by "
+                f"running tunnel '{holder}', so tunnel '{tunnel_id}' can't start. "
+                f"Stop it first with 'lpf stop {holder}'.",
+                highlight=False,
+            )
+            failed.append(tunnel_id)
+            continue
         if is_port_in_use(details["local_port"]):
             console.print(
                 f"[bold red]Error:[/] Local port {details['local_port']} is already in use "
@@ -388,8 +411,16 @@ def _claim_local_port(tunnels: dict, local_port: int, force: bool, tunnel_id: st
     # Check lpf's own registered tunnels first: a stopped/inactive tunnel
     # still "owns" its local_port even though nothing is bound to it at the
     # OS level, so is_port_in_use() alone would miss the conflict.
+    # A stopped tunnel doesn't hold its port: several tunnels may share one
+    # local port as long as only one runs at a time (see _start_tunnels). A
+    # stopped tunnel with this exact ID still conflicts, since IDs are unique.
     existing_tunnel_id = next(
-        (tid for tid, d in tunnels.items() if d.get("local_port") == local_port),
+        (
+            tid
+            for tid, d in tunnels.items()
+            if d.get("local_port") == local_port
+            and (tid == tunnel_id or not d.get("stopped"))
+        ),
         None,
     )
 

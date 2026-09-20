@@ -96,11 +96,28 @@ def test_add_multiple_ports_with_remote_port_is_an_error(fake):
 
 
 def test_add_refuses_port_owned_by_another_tunnel(fake):
-    add_saved_tunnel("old:8000", 8000, stopped=True)
+    add_saved_tunnel("old:8000", 8000)  # inactive, not stopped
     result = lpf("add", "myserver", "8000")
     assert result.exit_code == 1
     assert "already assigned to tunnel 'old:8000'" in result.output
     assert set(load_tunnels()) == {"old:8000"}
+
+
+def test_add_allows_port_of_stopped_tunnel(fake):
+    add_saved_tunnel("old:8000", 8000, stopped=True)
+    result = lpf("add", "myserver", "8000")
+    assert result.exit_code == 0, result.output
+    assert set(load_tunnels()) == {"old:8000", "myserver:8000"}
+    assert load_tunnels()["old:8000"].get("stopped")
+
+
+def test_start_refuses_port_of_another_running_tunnel(fake):
+    add_saved_tunnel("old:8000", 8000, stopped=True)
+    assert lpf("add", "myserver", "8000").exit_code == 0
+    result = lpf("start", "old:8000")
+    assert result.exit_code == 1
+    assert "already used by running tunnel 'myserver:8000'" in result.output
+    assert load_tunnels()["old:8000"].get("stopped")
 
 
 def test_add_refuses_duplicate_of_same_tunnel(fake):
@@ -155,7 +172,7 @@ def test_add_drops_tunnel_whose_autossh_did_not_start(fake):
 
 
 def test_add_continues_past_a_conflicting_port(fake):
-    add_saved_tunnel("old:8000", 8000, stopped=True)
+    add_saved_tunnel("old:8000", 8000)
     result = lpf("add", "myserver", "8000", "8001")
     assert result.exit_code == 1
     assert set(load_tunnels()) == {"old:8000", "myserver:8001"}

@@ -6,6 +6,13 @@ All notable changes to `lpf` are listed here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- `lpf add` no longer refuses a local port just because a *stopped* tunnel
+  uses it. Several tunnels can share a port as long as only one runs at a
+  time: `lpf start` (and `restart`) refuses to start a tunnel while another
+  tunnel is running on the same local port.
+
 ## [0.4.0] - 2026-09-20
 
 ### Added
