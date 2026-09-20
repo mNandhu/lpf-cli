@@ -65,6 +65,13 @@ completion is available once you set it up (see
 
 ## Requirements
 
+- A Unix-like OS:
+  - **Linux**: supported, including `lpf autostart` on systemd.
+  - **macOS**: supported. `lpf autostart` isn't automated; `enable` prints how
+    to set up a launchd agent.
+  - **Windows**: not supported natively, because `autossh` isn't available
+    there. Use [WSL](https://learn.microsoft.com/windows/wsl/) and run `lpf`
+    inside it.
 - `autossh` (for example `apt install autossh` or `brew install autossh`).
   Without it, `lpf` stops with an error that says how to install it.
 - Python 3.12+
