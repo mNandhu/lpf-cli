@@ -492,3 +492,13 @@ def test_start_all_starts_one_of_stopped_tunnels_sharing_a_port(fake):
     tunnels = load_tunnels()
     assert "pid" in tunnels["a:8000"]
     assert tunnels["b:8000"].get("stopped")
+
+
+def test_restart_force_prefers_running_over_crashed_tunnel_on_shared_port(fake):
+    add_saved_tunnel("b:8000", 8000, pid=999)  # crashed: not stopped, no process
+    add_saved_tunnel("a:8000", 8000, stopped=True)
+    assert lpf("start", "a:8000").exit_code == 0
+    result = lpf("restart", "--force")
+    assert result.exit_code == 0, result.output
+    assert "Skipping 'b:8000'" in result.output
+    assert load_tunnels()["a:8000"]["pid"] in fake.running

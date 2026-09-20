@@ -253,14 +253,19 @@ def _pick_port_winners(tunnels: dict, candidates: list[str]) -> list[str]:
 
     Only one tunnel can run per local port, so when starting several at once
     the rest are skipped with a note (not counted as failures). A tunnel
-    running outside `candidates` keeps its port. Among candidates, one that
-    isn't stopped beats a stopped one, then the first in order wins.
+    running outside `candidates` keeps its port. Among candidates, a running
+    tunnel beats an inactive one, which beats a stopped one, then the first
+    in order wins.
     """
     winners: dict[int, str] = {}
     for tid, d in tunnels.items():
         if tid not in candidates and not d.get("stopped") and is_process_running(d.get("pid"), d):
             winners[d["local_port"]] = tid
-    for tid in sorted(candidates, key=lambda t: bool(tunnels[t].get("stopped"))):
+    def rank(tid: str) -> tuple[bool, bool]:
+        d = tunnels[tid]
+        return bool(d.get("stopped")), not is_process_running(d.get("pid"), d)
+
+    for tid in sorted(candidates, key=rank):
         port = tunnels[tid]["local_port"]
         winners.setdefault(port, tid)
     picked = []
