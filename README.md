@@ -121,6 +121,8 @@ lpf add <SSH_HOST> <LOCAL_PORT>... [-r <REMOTE_PORT>] [-H <REMOTE_HOST>] [-n <NA
 - `<SSH_HOST>`: SSH host, such as `user@hostname` or an alias from `~/.ssh/config`
 - `<LOCAL_PORT>...`: one or more local ports to forward from. Each port becomes its own tunnel.
 - `-r, --remote-port`: remote port (defaults to the local port). Only works with a single local port.
+- `-c, --container`: Docker container on the SSH host to forward to. lpf looks up its IP over ssh, and again on every `start`/`restart`, so redeploys are picked up
+- `--network`: with `--container`, use the IP on this Docker network (default: the container's primary one)
 - `-H, --remote-host`: host the SSH server forwards to (defaults to `localhost`, meaning the server itself)
 - `-n, --name`: a memorable name for the tunnel (letters, digits, `.`, `_`, `-`), so you
   can refer to it as `<NAME>` instead of `SSH_HOST:PORT` in `stop`, `start`, `rm`, and

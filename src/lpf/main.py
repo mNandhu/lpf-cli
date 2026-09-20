@@ -118,6 +118,19 @@ def add_tunnel_command(
         "Use this to reach something the server can see but does not listen on, "
         "e.g. a container IP.",
     ),
+    container: str = typer.Option(
+        None,
+        "--container",
+        "-c",
+        help="Docker container on the SSH host to forward to. Its IP is looked up "
+        "over ssh, and again on every start/restart, since it changes on redeploy.",
+    ),
+    network: str = typer.Option(
+        None,
+        "--network",
+        help="With --container: use the IP on this Docker network "
+        "(default: the container's primary network).",
+    ),
     name: str = typer.Option(
         None,
         "--name",
@@ -128,7 +141,7 @@ def add_tunnel_command(
     ),
 ):
     """Add and start new tunnels, one per local port."""
-    commands.add_tunnel(ssh_host, local_ports, remote_port, force, remote_host, name)
+    commands.add_tunnel(ssh_host, local_ports, remote_port, force, remote_host, name, container, network)
 
 
 @app.command("ls", help="List all configured tunnels and their status")

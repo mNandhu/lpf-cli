@@ -4,11 +4,13 @@ CLI command functions for lpf-cli.
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from rich.table import Table
 
 from .utils import (
@@ -30,6 +32,10 @@ STOP_TIMEOUT = 5
 PID_FILE_TIMEOUT = 5
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Docker's own rule for container names.
+CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# How long to wait for `docker inspect` over ssh.
+INSPECT_TIMEOUT = 20
 
 AUTOSSH_MISSING = (
     "[bold red]Error:[/] autossh is not installed (or not on your PATH). "
@@ -139,6 +145,96 @@ def _last_ssh_error(tunnel_id: str) -> str | None:
     return ssh_lines[-1] if ssh_lines else "ssh exited with an error"
 
 
+def _resolve_container_ip(
+    ssh_host: str, container: str, network: str | None = None
+) -> tuple[str | None, str | None]:
+    """Ask the SSH host for a container's IP. Returns (ip, error).
+
+    Prints one "network=ip" line per network, so a container on several
+    networks gives separate addresses instead of one run-together string.
+    Without `network`, the container's primary network wins (the one it was
+    started on), else the first one with an address.
+    """
+    fmt = "@{{.HostConfig.NetworkMode}}\n{{range $n, $v := .NetworkSettings.Networks}}{{$n}}={{$v.IPAddress}}\n{{end}}"
+    remote_cmd = f"docker inspect -f {shlex.quote(fmt)} {shlex.quote(container)}"
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", ssh_host, remote_cmd],
+            capture_output=True,
+            text=True,
+            timeout=INSPECT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"timed out asking {ssh_host} about container '{container}'"
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        return None, (
+            f"could not inspect container '{container}' on {ssh_host}: "
+            f"{detail[-1] if detail else 'ssh/docker failed'}"
+        )
+    networks = {}
+    mode = None
+    for line in result.stdout.splitlines():
+        if line.startswith("@"):
+            mode = line[1:].strip()
+            continue
+        net, _, ip = line.strip().partition("=")
+        if net and ip:
+            networks[net] = ip
+    if network is not None:
+        if network not in networks:
+            have = ", ".join(networks) or "none with an IP"
+            return None, f"container '{container}' has no IP on network '{network}' (networks: {have})"
+        return networks[network], None
+    if not networks:
+        return None, (
+            f"container '{container}' has no IP address (is it running? "
+            f"host-network containers have none)"
+        )
+    if mode == "default":
+        mode = "bridge"
+    return networks.get(mode) or next(iter(networks.values())), None
+
+
+def _refresh_container_hosts(tunnels: dict, tunnel_ids: list[str]) -> list[str]:
+    """Re-resolve the IP of every container-backed tunnel. Returns the IDs that failed.
+
+    If a lookup fails but the tunnel has a saved IP, keep using it (with a
+    warning) so a brief ssh/docker hiccup doesn't stop a restart.
+    """
+    ids = [t for t in tunnel_ids if tunnels[t].get("container")]
+    if not ids:
+        return []
+
+    def lookup(tid):
+        d = tunnels[tid]
+        return _resolve_container_ip(d["ssh_host"], d["container"], d.get("network"))
+
+    # Lookups are network-bound, so run them together.
+    with ThreadPoolExecutor(max_workers=min(8, len(ids))) as pool:
+        results = list(pool.map(lookup, ids))
+
+    failed = []
+    for tunnel_id, (ip, error) in zip(ids, results):
+        details = tunnels[tunnel_id]
+        saved = details.get("remote_host")
+        if ip is None:
+            if saved and saved != "localhost":
+                console.print(
+                    f"[yellow]Warning:[/] Tunnel '{tunnel_id}': {error}. "
+                    f"Using the last known IP {saved}.",
+                    highlight=False,
+                )
+                continue
+            console.print(f"[bold red]Error:[/] Tunnel '{tunnel_id}': {error}", highlight=False)
+            failed.append(tunnel_id)
+            continue
+        if ip != saved:
+            console.print(f"Container '{details['container']}' is at {ip}.")
+        details["remote_host"] = ip
+    return failed
+
+
 def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> list[str]:
     """Start autossh for each tunnel and save their PIDs.
 
@@ -153,7 +249,10 @@ def _start_tunnels(tunnels: dict, tunnel_ids: list[str], wait: bool = True) -> l
         console.print(AUTOSSH_MISSING)
         return list(tunnel_ids)
 
-    failed = []
+    # Container IPs change when a container is redeployed, so look them up
+    # again on every start instead of trusting the saved one.
+    failed = _refresh_container_hosts(tunnels, tunnel_ids)
+    tunnel_ids = [t for t in tunnel_ids if t not in failed]
     started = []
     for tunnel_id in tunnel_ids:
         details = tunnels[tunnel_id]
@@ -341,8 +440,20 @@ def add_tunnel(
     force: bool = False,
     remote_host: str = "localhost",
     name: str | None = None,
+    container: str | None = None,
+    network: str | None = None,
 ):
     """Handler for the 'add' command. Adds one tunnel per local port."""
+    if container is not None:
+        if remote_host != "localhost":
+            console.print("[bold red]Error:[/] --container and --remote-host can't be used together.")
+            sys.exit(1)
+        if not CONTAINER_RE.fullmatch(container):
+            console.print("[bold red]Error:[/] Invalid container name.")
+            sys.exit(1)
+    elif network is not None:
+        console.print("[bold red]Error:[/] --network needs --container.")
+        sys.exit(1)
     local_ports = list(dict.fromkeys(local_ports))  # drop repeats, keep order
     if remote_port is not None and len(local_ports) > 1:
         console.print(
@@ -404,6 +515,8 @@ def add_tunnel(
             # another machine on its network).
             "remote_host": remote_host,
             **({"name": kept_name} if kept_name is not None else {}),
+            **({"container": container} if container else {}),
+            **({"network": network} if network else {}),
         }
         new_ids.append(tunnel_id)
 
@@ -463,7 +576,8 @@ def _status(details: dict) -> str:
 
 def _forwarding(details: dict) -> str:
     remote_host = details.get("remote_host") or "localhost"
-    return f"localhost:{details['local_port']} -> {remote_host}:{details['remote_port']}"
+    target = f"{details['container']}({remote_host})" if details.get("container") else remote_host
+    return f"localhost:{details['local_port']} -> {target}:{details['remote_port']}"
 
 
 def remove_tunnel(tunnel_id: str):

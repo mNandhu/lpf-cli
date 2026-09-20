@@ -387,3 +387,58 @@ def test_last_ssh_error_ignores_log_without_ssh_exit():
     log_file_path("x:1").write_text("2026/09/14 13:27:50 autossh[37061]: starting ssh (count 1)\n")
     assert commands._last_ssh_error("x:1") is None
     assert commands._last_ssh_error("missing:1") is None
+
+
+def fake_inspect(monkeypatch, stdout="", returncode=0, stderr=""):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(stdout=stdout, returncode=returncode, stderr=stderr)
+
+    monkeypatch.setattr(commands.subprocess, "run", run)
+    return calls
+
+
+def test_add_container_resolves_ip(fake, monkeypatch):
+    calls = fake_inspect(monkeypatch, "@net_b\nnet_a=10.89.0.3\nnet_b=10.89.1.17\n")
+    result = lpf("add", "vm", "3000", "-c", "grafana")
+    assert result.exit_code == 0, result.output
+    saved = load_tunnels()["vm:3000"]
+    assert saved["remote_host"] == "10.89.1.17"  # primary network, not alphabetical first
+    assert saved["container"] == "grafana"
+    assert calls[0][:4] == ["ssh", "-o", "BatchMode=yes", "vm"]
+
+
+def test_container_network_choice(fake, monkeypatch):
+    fake_inspect(monkeypatch, "net_a=10.89.0.3\nnet_b=10.89.1.17\n")
+    assert lpf("add", "vm", "3000", "-c", "grafana", "--network", "net_b").exit_code == 0
+    assert load_tunnels()["vm:3000"]["remote_host"] == "10.89.1.17"
+
+
+def test_restart_refreshes_container_ip(fake, monkeypatch):
+    fake_inspect(monkeypatch, "n=10.0.0.5\n")
+    add_saved_tunnel("vm:3000", 3000, container="grafana", remote_host="10.0.0.1")
+    result = lpf("start", "vm:3000")
+    assert result.exit_code == 0, result.output
+    assert load_tunnels()["vm:3000"]["remote_host"] == "10.0.0.5"
+
+
+def test_container_inspect_failure(fake, monkeypatch):
+    fake_inspect(monkeypatch, returncode=1, stderr="Error: No such object: nope\n")
+    result = lpf("add", "vm", "3000", "-c", "nope")
+    assert result.exit_code == 1
+    assert "No such object" in result.output
+    assert "vm:3000" not in load_tunnels()
+
+
+def test_container_conflicts_with_remote_host(fake):
+    assert lpf("add", "vm", "3000", "-c", "g", "-H", "1.2.3.4").exit_code == 1
+
+
+def test_lookup_failure_falls_back_to_saved_ip(fake, monkeypatch):
+    fake_inspect(monkeypatch, returncode=255, stderr="ssh: timeout\n")
+    add_saved_tunnel("vm:3000", 3000, container="grafana", remote_host="10.0.0.1")
+    result = lpf("start", "vm:3000")
+    assert result.exit_code == 0, result.output
+    assert "last known IP 10.0.0.1" in result.output
